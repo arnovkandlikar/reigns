@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from app import voice
-from app.models import BubbleContent
+from app.models import BubbleContent, BubbleProblem
 
 
 @pytest.fixture
@@ -32,7 +32,8 @@ def bubble(level, headline="Heads up: a cited source could not be confirmed."):
     return BubbleContent(level=level, headline=headline)
 
 
-def test_when_it_speaks():
+def test_when_it_speaks_short_mode(monkeypatch):
+    monkeypatch.setenv("REIGNS_VOICE_MODE", "short")
     assert voice.line_for(0, 3, bubble(3), False) == bubble(3).headline
     assert voice.line_for(3, 3, bubble(3), False) is None  # didn't rise
     assert voice.line_for(1, 2, bubble(2), False) is None  # below Alarmed
@@ -72,3 +73,38 @@ async def test_warm_cache_generates_common_lines(api):
     assert len(api.calls) == len(voice.COMMON_LINES)
     await voice.warm_cache()  # second time: all cached
     assert len(api.calls) == len(voice.COMMON_LINES)
+
+
+def full_bubble(level=2, ids=("c1", "c2")):
+    return BubbleContent(
+        level=level,
+        headline="Heads up: a cited source could not be confirmed",
+        problems=[BubbleProblem(claim_id=i, text=f"Problem {i} does not check out") for i in ids],
+        pattern_text="Claude tends to invent citations in this topic",
+    )
+
+
+def test_full_mode_reads_whole_bubble(monkeypatch):
+    monkeypatch.delenv("REIGNS_VOICE_MODE", raising=False)  # full is the default
+    line = voice.line_for(0, 2, full_bubble(), False)
+    assert line == ("Heads up: a cited source could not be confirmed. Problem c1 does not check out. "
+                    "Problem c2 does not check out. Claude tends to invent citations in this topic.")
+    # nothing new → silent; a new problem → speaks again; level 0 → silent
+    assert voice.line_for(2, 2, full_bubble(), False, {"c1", "c2"}) is None
+    assert voice.line_for(2, 2, full_bubble(ids=("c1", "c3")), False, {"c1", "c2"})
+    assert voice.line_for(0, 0, full_bubble(level=0), False) is None
+    # long bubbles are capped
+    many = full_bubble(ids=[f"c{i}" for i in range(10)])
+    many.pattern_text = " ".join(["word"] * 100)
+    capped = voice.line_for(0, 2, many, False)
+    assert "Plus 7 more." in capped and len(capped.split()) == voice.FULL_MAX_WORDS
+
+
+async def test_full_mode_does_not_repeat_itself(api, monkeypatch):
+    monkeypatch.setenv("REIGNS_VOICE_MODE", "full")
+    st = voice.VoiceState()
+    assert await voice.maybe_speak(st, 0, 2, full_bubble(), False, now=0.0)
+    assert await voice.maybe_speak(st, 2, 2, full_bubble(), False, now=30.0) is None  # same problems
+    assert await voice.maybe_speak(st, 2, 2, full_bubble(ids=("c9",)), False, now=60.0)
+    assert await voice.maybe_speak(st, 2, 0, full_bubble(level=0), True, now=90.0)  # Fixed it!
+    assert st.spoken_ids == set()
