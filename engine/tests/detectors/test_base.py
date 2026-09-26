@@ -178,3 +178,25 @@ def test_word_overlap_separates_topic_neighbours():
     assert similarity(fake, other) > 0.6  # spelling alone looks close …
     assert word_overlap(fake, other) < 0.3  # … but they share almost no meaningful words
     assert word_overlap("Attention Is All You Need", "attention is all you need") == 1.0
+
+
+@pytest.mark.parametrize(
+    ("text", "instruction"),
+    [
+        (
+            "Sleep 0.6 seconds between calls, which keeps you at exactly 100 requests per minute.",
+            True,
+        ),
+        ("Read it from the response and fall back to 60 seconds if it's missing:", True),
+        ("Here's the minimal app.", True),
+        ("Then use df.to_csv to save it.", True),
+        ("Linus Torvalds created Git in 2005.", False),
+        ("Most APIs answer with HTTP status 429, which means Too Many Requests.", False),
+        ("The retries argument makes requests retry failed downloads automatically.", False),
+        ("Flask was first released in 2010.", False),
+    ],
+)
+def test_looks_like_instruction(text, instruction):
+    from app.detectors.base import looks_like_instruction
+
+    assert looks_like_instruction(text) is instruction

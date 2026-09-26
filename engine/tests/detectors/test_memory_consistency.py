@@ -464,3 +464,71 @@ async def test_verified_fact_on_other_subject_stays_silent():
     s.messages.append(ChatMessage(message_id="a1", role="assistant", text="x", position=0))
     det = MemoryConsistency(judge=judge_says({"verdict": "unrelated"}), extract_judge=extractor([]))
     assert await det.check(claim("The Eiffel Tower is 330 metres tall."), s) is None
+
+
+# --------------------------------------------------------------------------- long-chat: subject
+async def test_verified_fact_about_another_subject_is_ignored():
+    """Long-chat replay: Flask's 2010 release was flagged against Python's 1991 card."""
+    await add_card(
+        "local",
+        "verified_fact",
+        "Python's first version was released in 1991.",
+        source="claim_verifier",
+    )
+    s = SessionContext(session_id="s")
+    s.messages.append(ChatMessage(message_id="a1", role="assistant", text="x", position=0))
+    judge = judge_says({"verdict": "contradicts", "memory_index": 0, "confidence": 0.95})
+    det = MemoryConsistency(judge=judge, extract_judge=extractor([]))
+    c = Claim(
+        claim_id="c",
+        message_id="a1",
+        quote="first released in 2010",
+        normalized="Flask was first released in 2010.",
+        type="fact",
+        risk="high",
+    )
+    assert await det.check(c, s) is None
+    assert judge.calls == []  # the card never reaches the judge
+
+
+def test_same_subject():
+    from app.detectors.memory_consistency import same_subject
+
+    def c(text):
+        return Claim(claim_id="c", message_id="m", quote=text, normalized=text, type="fact",
+                     risk="high")
+
+    def card_(text, subject=""):
+        return MemoryCard(card_id="x", user_id="u", kind="verified_fact", text=text,
+                          subject=subject)
+
+    # proper-noun fallback (older cards, no LLM)
+    assert same_subject(card_("Wikipedia states the Eiffel Tower was completed in 1889."),
+                        c("The Eiffel Tower opened to visitors in 1899."))
+    assert not same_subject(card_("Python's first version was released in 1991."),
+                            c("Flask was first released in 2010."))
+    # gate subjects win when both exist
+    assert same_subject(card_("x", "eiffel tower"), c("y"), "eiffel tower height")
+    assert not same_subject(card_("x", "python"), c("y"), "flask")
+
+
+async def test_judge_sees_the_claims_subject():
+    await add_card(
+        "local", "verified_fact", "Flask was first released in 2010.", source="claim_verifier"
+    )
+    s = SessionContext(session_id="s")
+    s.messages.append(ChatMessage(message_id="a1", role="assistant", text="x", position=0))
+    judge = judge_says({"verdict": "consistent", "memory_index": 0, "confidence": 0.9})
+    det = MemoryConsistency(judge=judge, extract_judge=extractor([]))
+    await det.check(
+        Claim(
+            claim_id="c",
+            message_id="a1",
+            quote="first released in 2010",
+            normalized="Flask was first released in 2010.",
+            type="fact",
+            risk="high",
+        ),
+        s,
+    )
+    assert "CLAIM: Flask was first released in 2010." in judge.calls[0]

@@ -335,3 +335,21 @@ def test_is_refusal():
     assert is_refusal("Could you provide the code?")
     assert not is_refusal("The first mayor of Tórshavn was Andrias Samuelsen.")
     assert not is_refusal("1889")
+
+
+# --------------------------------------------------------------------------- long-chat fixes
+async def test_instruction_claims_are_not_probed(session):
+    sampler = scripted(["x"] * 5)
+    probe = ConsistencyProbe(sampler=sampler, judge=grouping([[0, 1, 2, 3, 4]], 0))
+    c = claim(
+        "Read it from the response and fall back to 60 seconds if it's missing:", question=None
+    )
+    assert await probe.check(c, session) is None and sampler.calls == []
+
+
+async def test_context_dependent_claim_abstains(session):
+    """Question writer says it can't be asked standalone ("it returns a new DataFrame")."""
+    sampler = scripted(["x"] * 5)
+    probe = ConsistencyProbe(sampler=sampler, judge=grouping([[0]], 0, question=None))
+    c = claim("It returns a new DataFrame unless you pass inplace=True.", question=None)
+    assert await probe.check(c, session) is None and sampler.calls == []

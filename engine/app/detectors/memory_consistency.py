@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.detectors.base import BaseDetector, snippet
+from app.detectors.claim_gate import gate
 from app.learning import memory
 from app.learning.memory import USER_KINDS, MemoryCard
 from app.llm import complete_json
@@ -237,6 +238,56 @@ def required_python(code: str) -> tuple[tuple[int, int], str] | None:
     return need
 
 
+_PROPER = re.compile(r"\b[A-Z][\w'’-]*[A-Za-z0-9]")
+_NOT_SUBJECT = {
+    "the",
+    "a",
+    "an",
+    "it",
+    "this",
+    "that",
+    "wikipedia",
+    "earlier",
+    "yes",
+    "no",
+    "in",
+    "on",
+    "its",
+    "their",
+    "his",
+    "her",
+}
+
+
+def _proper_nouns(text: str) -> set[str]:
+    return {w.lower().rstrip("'’s") for w in _PROPER.findall(text)} - _NOT_SUBJECT
+
+
+def _subjects_match(a: str, b: str) -> bool:
+    """ "eiffel tower" ~ "the eiffel tower's height"; "flask" !~ "python"."""
+    wa, wb = memory.tokens(a), memory.tokens(b)
+    return bool(wa and wb and (wa <= wb or wb <= wa or len(wa & wb) >= 2))
+
+
+def same_subject(card: MemoryCard, claim: Claim, claim_subject: str = "") -> bool:
+    """A verified fact / correction only applies to a claim about the SAME thing.
+
+    Preferred: both sides carry a subject from the Claim Gate (stored on the card when it was
+    verified). Fallback for older cards / no LLM: proper nouns must overlap (Flask ≠ Python,
+    Eiffel Tower = Eiffel Tower); cards without proper nouns need a shared meaningful word.
+    """
+    if card.subject and claim_subject:
+        return _subjects_match(card.subject, claim_subject)
+    claim_text = f"{claim.normalized} {claim.quote}"
+    card_names, claim_names = _proper_nouns(card.text), _proper_nouns(claim_text)
+    if card_names:
+        return bool(card_names & claim_names)
+    generic = {"first", "released", "release", "version", "created", "built", "completed",
+               "made", "new", "old", "year", "years", "about", "approximately"}
+    card_words = {w for w in memory.tokens(card.text) if not w[0].isdigit()} - generic
+    return bool(card_words & memory.tokens(claim_text))
+
+
 def _imported_roots(code: str) -> set[str]:
     """{"requests", "pandas", …} from the code's imports (parse only)."""
     try:
@@ -283,17 +334,26 @@ def python_violation(card: MemoryCard, code: str | None) -> str | None:
 class MemoryConsistency(BaseDetector):
     name = "memory_consistency"
 
-    def __init__(self, judge=None, extract_judge=None) -> None:
+    def __init__(self, judge=None, extract_judge=None, gate_judge=None) -> None:
+        self.gate_judge = gate_judge
         self.judge = judge  # injectable for tests; None → app.llm.complete_json
         self.extract_judge = extract_judge
 
     async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
         await self._ingest(claim, session)
         uid = memory.user_id_for(session)
+        g = await gate(claim, session, self.gate_judge)
+        claim = g.resolved(claim)  # reason about the context-resolved claim, not a fragment
         text = claim.code or f"{claim.quote}\n{claim.normalized}"
-        # All kinds: the user's facts/rules AND earlier evidence-backed verdicts.
+        # All kinds: the user's facts/rules AND earlier evidence-backed verdicts. Verified facts
+        # and corrections are about the WORLD, so they only apply to world-fact claims about the
+        # SAME subject; the user's own rules apply to advice and code too.
         hits = await memory.relevant(uid, text, k=RECALL_K)
-        cards = [c for c, _ in hits]
+        cards = [
+            c for c, _ in hits
+            if c.kind in USER_KINDS
+            or (g.kind in ("world_fact", "unknown") and same_subject(c, claim, g.subject))
+        ]
         if claim.code:
             # Code rarely shares words with "Uses Python 3.8" or "on pandas 1.5", so similarity
             # misses them. Setup cards about Python or an imported library always apply.
@@ -347,7 +407,15 @@ class MemoryConsistency(BaseDetector):
     # ------------------------------------------------------------------ judge
     async def _judge(self, claim: Claim, cards: list[MemoryCard]) -> dict[str, Any]:
         numbered = "\n".join(f"[{i}] ({c.kind}) {c.text}" for i, c in enumerate(cards))
-        body = f"CODE:\n{claim.code[:3000]}" if claim.code else f"CLAIM: {claim.quote[:800]}"
+        if claim.code:
+            body = f"CODE:\n{claim.code[:3000]}"
+        else:
+            # The normalized form carries the SUBJECT ("Flask was first released in 2010");
+            # the quote alone may be a fragment ("first released in 2010") that the judge then
+            # pinned on the wrong memory (long-chat replay: matched to Python's 1991 card).
+            body = f"CLAIM: {claim.normalized[:500]}"
+            if claim.quote and claim.quote.strip() != claim.normalized.strip():
+                body += f"\n(original wording: {claim.quote[:300]})"
         data = await (self.judge or complete_json)(
             JUDGE_SYSTEM, f"{body}\n\nUSER MEMORIES:\n{numbered}"
         )

@@ -150,6 +150,9 @@ _INSTALL = re.compile(
 )
 # Words that end a package list in prose: "pip install requests to fetch the page".
 _STOPWORDS = {"to", "and", "then", "or", "for", "with", "in", "first", "if", "so", "via", "from"}
+_NAMED_LIB = re.compile(
+    r"\b([a-z][a-z0-9_.\-]*[a-z0-9])\s+(?:library|package|module|lib)\b", re.IGNORECASE
+)
 _TICKED = re.compile(r"`([^`\s]+)`")
 _PKG_NAME = re.compile(r"^@?[A-Za-z0-9][A-Za-z0-9._\-]*(/[A-Za-z0-9._\-]+)?$")
 _JS_HINT = re.compile(
@@ -171,6 +174,9 @@ def parse_packages(claim: Claim) -> tuple[list[str], str]:
                 names.append(tok)
     if not names:
         names = _TICKED.findall(text)
+    if not names:
+        # Prose like "the boto3 library's upload_file" or "the httpx package".
+        names = _NAMED_LIB.findall(text)
     if not names:
         q = _QUOTED.search(text) or _QUOTED.search(claim.normalized)
         if q:
@@ -312,7 +318,7 @@ class ReferenceAuditor(BaseDetector):
     def _client(self) -> httpx.AsyncClient:
         return http_client(transport=self.transport) if self.transport else http_client()
 
-    async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult:
+    async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
         if claim.type == "paper":
             return await self._check_paper(claim, session)
         if claim.type == "url":
@@ -322,10 +328,10 @@ class ReferenceAuditor(BaseDetector):
         return self.result("unverified", 0.0, "Not a reference claim, so it wasn't checked.")
 
     # ---------------------------------------------------------------------- papers
-    async def _check_paper(self, claim: Claim, session: SessionContext) -> DetectorResult:
+    async def _check_paper(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
         ref = parse_paper(claim)
         if len(normalize_text(ref.title)) < 6:
-            return self.result("unverified", 0.3, "Couldn't tell which paper this refers to.")
+            return None  # can't tell what to look up → say nothing (long-chat fix)
 
         # All three searches at once; each is cached per title so a paper cited twice is looked
         # up once. return_exceptions=True: one API failing must not sink the others.
@@ -518,10 +524,10 @@ class ReferenceAuditor(BaseDetector):
             return resp
 
     # ---------------------------------------------------------------------- URLs
-    async def _check_url(self, claim: Claim, session: SessionContext) -> DetectorResult:
+    async def _check_url(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
         url = parse_url(claim)
         if not url:
-            return self.result("unverified", 0.3, "Couldn't find a link in this claim.")
+            return None  # can't tell what to look up → say nothing (long-chat fix)
         host = urlparse(url).hostname or ""
         if not host or _is_private_host(host):
             return self.result("unverified", 0.3, "Local or private link — not checked.")
@@ -615,10 +621,10 @@ class ReferenceAuditor(BaseDetector):
         return m.size >= 0.85 * len(want)
 
     # ---------------------------------------------------------------------- packages
-    async def _check_package(self, claim: Claim, session: SessionContext) -> DetectorResult:
+    async def _check_package(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
         names, ecosystem = parse_packages(claim)
         if not names:
-            return self.result("unverified", 0.3, "Couldn't tell which package this refers to.")
+            return None  # can't tell what to look up → say nothing (long-chat fix)
         registry = "npm" if ecosystem == "npm" else "PyPI"
         found: list[str] = []
         missing: list[str] = []

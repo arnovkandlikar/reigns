@@ -350,3 +350,26 @@ async def test_live_sources_diagnostic():
                 print(f"  {name}: {len(part)} snippets")
                 for sn in part[:3]:
                     print(f"      [{sn.source}] {sn.text[:110]}")
+
+
+# --------------------------------------------------------------------------- long-chat fixes
+async def test_instructions_are_not_fact_checked(session):
+    hosts = []
+
+    def spy(req):
+        hosts.append(req.url.host)
+        return web_handler(req)
+
+    r = await verifier(handler=spy).check(
+        claim("Sleep 0.6 seconds between calls, which keeps you at 100 requests per minute."),
+        session,
+    )
+    assert r is None and hosts == []  # abstains without spending a search
+
+
+async def test_not_checkable_verdict_abstains(session):
+    judge = fake_judge({"1899": {"verdict": "not_checkable", "confidence": 0.9}})
+    assert (
+        await verifier(judge).check(claim("The Eiffel Tower was completed in 1899."), session)
+        is None
+    )

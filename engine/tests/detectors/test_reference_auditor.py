@@ -593,3 +593,18 @@ async def test_openalex_alone_can_confirm_a_paper(session):
         claim("paper", 'Vaswani et al. (2017), "Attention Is All You Need"'), session
     )
     assert r.status == "supported" and r.evidence[0].source == "OpenAlex"
+
+
+# --------------------------------------------------------------------------- long-chat fixes
+async def test_unidentifiable_package_claim_is_silent(auditor, session):
+    """Long-chat replay: "pandas works well here" → was amber "Couldn't tell which package"."""
+    assert await auditor.check(claim("package", "pandas works well here"), session) is None
+
+
+async def test_library_named_in_prose_is_looked_up(auditor, session):
+    r = await auditor.check(
+        claim("package", "The requests library's Session reuses connections."), session
+    )
+    assert r.status == "supported"
+    r = await auditor.check(claim("package", "Use the fastapi-ratelimiter-pro package."), session)
+    assert r.status == "contradicted"
