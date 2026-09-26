@@ -52,6 +52,11 @@ def route(claim: Claim) -> list[str]:
     return []
 
 
+def could_need_probe(claim: Claim) -> bool:
+    """Claims that *might* need the Consistency Probe (decided before the verifier answers)."""
+    return claim.risk == "high" and claim.type in ("fact", "number", "other")
+
+
 def needs_consistency_probe(claim: Claim, stage1: list[DetectorResult]) -> bool:
     """High factual claim and Claim Verifier found no evidence (unverified / error / missing)."""
     if claim.risk != "high" or claim.type not in ("fact", "number", "other"):
