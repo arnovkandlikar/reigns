@@ -1,10 +1,10 @@
 """ElevenLabs voice for the pet (FR-V1, FR-V2, Role B).
 
-When the pet speaks (FR-V2):
-- the level rises to 3 (Alarmed) or 4 (Meltdown) → says the bubble headline (≤ 15 words)
-- a verified fix → "Fixed it!" (Recovered)
-- (bubble open would also speak, but §12 has no companion→engine message for it yet)
-At most one line per 20 s per session.
+Two modes, picked with REIGNS_VOICE_MODE:
+- full (default): whenever a reply brings NEW problems (level ≥ 1), the pet reads the whole
+  bubble — headline, up to 3 problems, and the pattern — capped at ~70 words.
+- short (PRD FR-V2): only when the level rises to 3 or 4, says the headline (≤ 15 words).
+Both: a verified fix → "Fixed it!" (Recovered). At most one line per 20 s per session.
 
 Speed: every line is cached on disk (engine/.voice_cache/, git-ignored) and ~20 common lines
 are pre-generated at startup, so the usual lines play instantly.
@@ -31,6 +31,8 @@ log = logging.getLogger("reigns.voice")
 
 MIN_GAP_S = 20.0
 MAX_WORDS = 15
+FULL_MAX_WORDS = 70
+FULL_MAX_PROBLEMS = 3
 TTS_TIMEOUT_S = 6.0
 API_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 DEFAULT_MODEL = "eleven_flash_v2_5"  # ElevenLabs' low-latency model
@@ -76,11 +78,51 @@ def clip_words(text: str, n: int = MAX_WORDS) -> str:
     return " ".join(words[:n]) + ("…" if len(words) > n else "")
 
 
-def line_for(prev_level: int, level: int, bubble: BubbleContent, recovered: bool) -> Optional[str]:
+def mode() -> str:
+    m = (os.environ.get("REIGNS_VOICE_MODE") or "full").strip().lower()
+    return m if m in ("full", "short") else "full"
+
+
+def _sentence(text: str) -> str:
+    text = " ".join(text.split())
+    return text if not text or text[-1] in ".!?…" else text + "."
+
+
+def full_line(bubble: BubbleContent) -> str:
+    """Headline + up to 3 problems + pattern, as one spoken paragraph (≤ ~70 words)."""
+    parts = [bubble.headline]
+    parts += [p.text for p in bubble.problems[:FULL_MAX_PROBLEMS]]
+    extra = len(bubble.problems) - FULL_MAX_PROBLEMS
+    if extra > 0:
+        parts.append(f"Plus {extra} more.")
+    parts.append(bubble.pattern_text)
+    text = " ".join(_sentence(t) for t in parts if t and t.strip())
+    return clip_words(text, FULL_MAX_WORDS)
+
+
+def _new_problem_ids(bubble: BubbleContent, spoken_ids: set[str]) -> set[str]:
+    return {p.claim_id for p in bubble.problems} - spoken_ids
+
+
+def line_for(
+    prev_level: int,
+    level: int,
+    bubble: BubbleContent,
+    recovered: bool,
+    spoken_ids: Optional[set[str]] = None,
+) -> Optional[str]:
     if recovered:
         return "Fixed it!"
-    if level >= 3 and level > prev_level and bubble.headline:
-        return clip_words(bubble.headline)
+    if mode() == "short":
+        if level >= 3 and level > prev_level and bubble.headline:
+            return clip_words(bubble.headline)
+        return None
+    # full mode
+    if level < 1 or not bubble.headline:
+        return None
+    rose_to_alarm = level >= 3 and level > prev_level
+    if _new_problem_ids(bubble, spoken_ids or set()) or rose_to_alarm:
+        return full_line(bubble)
     return None
 
 
@@ -137,10 +179,11 @@ async def warm_cache() -> None:
 
 
 class VoiceState:
-    """Per-session rate limit (≤ 1 line / 20 s)."""
+    """Per-session rate limit (≤ 1 line / 20 s) + which problems were already read out."""
 
     def __init__(self) -> None:
         self.last_spoken = -MIN_GAP_S
+        self.spoken_ids: set[str] = set()
 
 
 async def maybe_speak(
@@ -153,7 +196,7 @@ async def maybe_speak(
 ) -> Optional[VoicePlay]:
     if not enabled():
         return None
-    text = line_for(prev_level, level, bubble, recovered)
+    text = line_for(prev_level, level, bubble, recovered, state.spoken_ids)
     now = time.monotonic() if now is None else now
     if not text or now - state.last_spoken < MIN_GAP_S:
         return None
@@ -165,4 +208,8 @@ async def maybe_speak(
     if not audio:
         return None
     state.last_spoken = now
+    if recovered:
+        state.spoken_ids.clear()  # after a fix, a relapse should be read out again
+    else:
+        state.spoken_ids |= {p.claim_id for p in bubble.problems}
     return VoicePlay(text=text, audio_b64=base64.b64encode(audio).decode(), level=level)
