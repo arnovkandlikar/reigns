@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.course_correct import api
-from app.models import Claim, ClaimVerdict, DetectorResult, SessionContext
+from app.models import Claim, ClaimVerdict, DetectorResult, DriftProfile, Evidence, SessionContext
 
 
 @pytest.fixture
@@ -93,3 +93,50 @@ def test_fix_outcome_is_kept_for_following_bandit_stage(summary_session: Session
     api.on_fix_outcome(summary_session, "correction-1", True)
 
     assert summary_session.cache["course_correct:fix_outcomes"] == {"correction-1": True}
+
+
+@pytest.mark.parametrize(("level", "variant"), [(1, "v1"), (2, "v2"), (3, "v3"), (4, "v1")])
+def test_fix_it_citation_copy_hides_scores_and_avoids_nested_quotes(
+    level: int, variant: str
+) -> None:
+    quote = 'Lee & Park (2022), "Transformer Models for Honeybee Colony Collapse Forecasting"'
+    claim = Claim(
+        claim_id="citation-1",
+        message_id="answer-1",
+        quote=quote,
+        normalized="The paper 'Transformer Models for Honeybee Colony Collapse Forecasting' exists.",
+        type="paper",
+        risk="high",
+    )
+    verdict = ClaimVerdict(
+        claim_id=claim.claim_id,
+        quote=quote,
+        type=claim.type,
+        risk=claim.risk,
+        final="red",
+        detector_results=[
+            DetectorResult(
+                detector="reference_auditor",
+                status="contradicted",
+                confidence=0.95,
+                explanation="No matching paper was found.",
+                evidence=[
+                    Evidence(
+                        source="Crossref", snippet="No matching work found (best title match 0.58)"
+                    ),
+                    Evidence(source="OpenAlex", snippet="No matching work (best title match 0.61)"),
+                ],
+            )
+        ],
+    )
+    session = SessionContext(session_id="citation-copy", claims={claim.claim_id: claim})
+    profile = DriftProfile(failures=[claim.claim_id], root_causes=["fabricated_sources"])
+
+    prompt = api._correction_text(level, profile, [verdict], session, variant)
+
+    assert "No matching paper found in Crossref or OpenAlex" in prompt
+    assert "best title match" not in prompt
+    assert "0.58" not in prompt
+    assert "exists.." not in prompt
+    assert f"“{quote}”" not in prompt
+    assert quote in prompt
