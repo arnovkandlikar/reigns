@@ -14,6 +14,7 @@ struct ReignsApp: App {
             if !state.axTrusted {
                 Text("Accessibility permission needed")
             }
+            Text("Engine: \(state.engineStatus.rawValue)")
             #if DEBUG
             Menu("Preview Level") {
                 ForEach(0..<5) { level in
@@ -36,4 +37,5 @@ final class AppState {
     static let shared = AppState()
     var isPaused = false
     var axTrusted = false
+    var engineStatus = EngineClient.Status.offline
 }

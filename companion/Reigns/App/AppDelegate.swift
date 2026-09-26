@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var tracker: ClaudeWindowTracker!
     private let dockTracker = DockTracker()
     private var watcher: ConversationWatcher!
+    private var engine: EngineClient!
     private var pet: PetPanelController!
     private var frontmostClaude: NSRunningApplication?
 
@@ -27,14 +28,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tracker.onFrameChange = { [weak self] frame in self?.pet.claudeWindowChanged(frame) }
         dockTracker.onChange = { [weak self] frame in self?.pet.dockChanged(frame) }
 
-        watcher = ConversationWatcher(reader: ConversationReader(rules: rules.conversation))
-        watcher.onMessage = { completed in
-            // FR-A5 will send this to the engine as message.new.
-            Log.app.info("message.new ready: position \(completed.message.position) \(completed.message.role.rawValue, privacy: .public)")
+        engine = EngineClient(url: EngineClient.configuredURL()) { [weak self] in
+            self?.claudeVersion() ?? "unknown"
         }
-        watcher.onConversationChange = {
-            // FR-A5 will start a new engine session here.
-            Log.app.info("Conversation changed; new session needed")
+        engine.onStatus = { [weak self] status in self?.state.engineStatus = status }
+        engine.onHeat = { [weak self] heat in self?.pet.apply(heat) }
+        engine.onBubble = { [weak self] bubble in self?.pet.apply(bubble) }
+        engine.onVerdicts = { [weak self] verdicts in self?.pet.apply(verdicts) }
+        pet.onDisagree = { [weak self] claimID in self?.engine.sendDisagree(claimID: claimID) }
+        engine.start()
+
+        watcher = ConversationWatcher(reader: ConversationReader(rules: rules.conversation))
+        watcher.onMessage = { [weak self] completed in self?.engine.sendMessage(completed) }
+        watcher.onConversationChange = { [weak self] in
+            self?.engine.startNewSession()
+            self?.pet.resetForNewConversation()
         }
 
         monitor = ClaudeAppMonitor(claudeBundleID: rules.claudeBundleID)
@@ -88,6 +96,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     #endif
+
+    private func claudeVersion() -> String {
+        let app = frontmostClaude
+            ?? NSRunningApplication.runningApplications(withBundleIdentifier: rules.claudeBundleID).first
+        return app?.bundleURL.flatMap { Bundle(url: $0)?.infoDictionary?["CFBundleShortVersionString"] as? String }
+            ?? "unknown"
+    }
 
     func togglePause() {
         state.isPaused.toggle()

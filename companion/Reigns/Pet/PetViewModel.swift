@@ -8,6 +8,10 @@ final class PetViewModel {
     var heat = 0
     /// Latest bubble.content from the engine; nil until the engine has said anything.
     var bubble: BubbleContent?
+    /// heat.update.recovered: shown for 3 s after a verified fix (FR-A6 draws it).
+    var isRecovered = false
+    /// Every checked claim in this conversation (merged from verdicts.update), for Details.
+    var claims: [ClaimVerdict] = []
     var isBubbleOpen = false
     var isDetailsOpen = false
 }

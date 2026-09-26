@@ -41,3 +41,28 @@ What: Done in role-b/fix-verification.
    - Mongo: `prompt_trials` row + `prompt_variants` `$inc` alpha (fixed) / beta (not fixed),
      counts start at 0 — add your prior (e.g. Beta(1,1)) when sampling.
 Status: done
+
+## 2026-09-26 04:55 — from Role A → Role B, Role C, Role D
+What: False alarms on facts that are private to the user's context. Repro: an assistant reply
+that accurately summarised our own repo ("19 new commits", "Role C added the Consistency Probe
+(FR-C3)", "It now runs 5 detectors") produced 10 red + 6 amber → heat 100, Meltdown, even though
+every claim was true. Ledger shows the pattern on every red: claim_verifier `unverified` (web has
+nothing on a private repo) + consistency_probe `likely_hallucination` (an outside model can't
+know it either, so its 5 samples scatter) → §8.4 turns that into red.
+Suggested fixes (owners decide):
+1. Role B, triage (FR-B4): don't check claims about the user's own context — their project,
+   files, code, or things stated earlier in this conversation. Mark them low risk / skipped.
+2. Role C, Consistency Probe (FR-C3): if most samples are "I don't know"-style answers, return
+   `uncertain`, not `likely_hallucination`; or only probe claims about public knowledge.
+3. Role B/C, aggregation (§8.4): "likely_hallucination + no evidence = red" is too harsh when the
+   Claim Verifier found no evidence either way. Suggest amber unless something contradicts the
+   claim (PRD precision rule: "when in doubt → amber").
+4. Role D, bubble copy (FR-D4): the Meltdown bubble said "Some details are uncertain and need
+   checking" + "Fairly sure" while every problem read "can't be confirmed or denied". Headline and
+   confidence should match the evidence; problem lines should describe Claude's claim in plain
+   English rather than the detector's note ("None of the snippets mention…"), and shouldn't be cut
+   mid-sentence ("so it can't be…").
+Why: G5 precision ≥ 0.80 / risk R3. A judge who asks Claude about their own code, notes or company
+will hit this immediately. Companion side is fixed: it no longer reads the Code tab at all, and
+Details now lists every claim with its verdict, detector explanation and evidence.
+Status: open

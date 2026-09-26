@@ -56,7 +56,7 @@ struct BubbleView: View {
             }
 
             if model.isDetailsOpen {
-                BubbleDetails(problems: content.problems)
+                BubbleDetails(claims: model.claims, problems: content.problems)
             }
 
             if !content.actionText.isEmpty {
@@ -111,35 +111,119 @@ struct BubbleView: View {
     }
 }
 
-/// Expanded per-claim list with evidence links. (Once verdicts.update is wired up this can show every
-/// checked claim, not just the bubble's problems.)
+/// FR-A8 Details: every checked claim in the conversation with its verdict, what the detectors
+/// found, and evidence links. Problems first (red, then amber), then claims that checked out.
 private struct BubbleDetails: View {
+    let claims: [ClaimVerdict]
+    /// Fallback before any verdicts.update has arrived (e.g. debug previews).
     let problems: [BubbleProblem]
+
+    private static let order = ["red": 0, "amber": 1, "green": 2]
+
+    private var shown: [ClaimVerdict] {
+        claims
+            .filter { Self.order[$0.final] != nil }  // "skipped" claims weren't checked
+            .sorted { Self.order[$0.final]! < Self.order[$1.final]! }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider()
-            if problems.isEmpty {
-                Text("No flagged claims in this conversation yet.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(problems) { problem in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(problem.text)
+            if shown.isEmpty {
+                if problems.isEmpty {
+                    Text("No checked claims in this conversation yet.")
                         .font(.system(size: 12))
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let link = problem.evidenceURL.flatMap(URL.init(string:)) {
-                        Link("Evidence ↗", destination: link)
-                            .font(.system(size: 11))
-                    } else {
-                        Text("No source link")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(problems) { problem in
+                    ClaimRow(verdict: nil, quote: problem.text, explanation: nil,
+                             links: problem.evidenceURL.map { [("Evidence", $0)] } ?? [])
+                }
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(shown) { claim in
+                            ClaimRow(verdict: claim.final, quote: claim.quote,
+                                     explanation: Self.explanation(for: claim), links: Self.links(for: claim))
+                        }
+                    }
+                }
+                .frame(maxHeight: 260)
+            }
+            Divider()
+        }
+    }
+
+    /// The detector note that decided the verdict: prefer a non-error result that isn't just
+    /// "supported"/"consistent" when the claim was flagged.
+    private static func explanation(for claim: ClaimVerdict) -> String? {
+        let useful = claim.detectorResults.filter { $0.status != "error" && !$0.explanation.isEmpty }
+        let flagged = useful.first { !["supported", "consistent"].contains($0.status) }
+        return (claim.final == "green" ? useful.first : flagged ?? useful.first)?.explanation
+    }
+
+    private static func links(for claim: ClaimVerdict) -> [(String, String)] {
+        var seen = Set<String>()
+        return claim.detectorResults.flatMap(\.evidence).compactMap { evidence in
+            guard let url = evidence.url, seen.insert(url).inserted else { return nil }
+            return (evidence.source, url)
+        }
+        .prefix(3).map { $0 }
+    }
+}
+
+private struct ClaimRow: View {
+    /// "red" | "amber" | "green", or nil for a plain problem line.
+    let verdict: String?
+    let quote: String
+    let explanation: String?
+    let links: [(String, String)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if let verdict {
+                HStack(spacing: 5) {
+                    Circle().fill(Self.color(verdict)).frame(width: 7, height: 7)
+                    Text(Self.label(verdict)).font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Text("\u{201C}\(quote)\u{201D}")
+                    .font(.system(size: 12))
+                    .italic()
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(quote).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+            }
+            if let explanation {
+                Text(explanation)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 10) {
+                ForEach(links, id: \.1) { source, url in
+                    if let link = URL(string: url) {
+                        Link("\(source) ↗", destination: link).font(.system(size: 11))
                     }
                 }
             }
-            Divider()
+        }
+    }
+
+    // Text label alongside the colour so colour is never the only signal (§18).
+    private static func label(_ verdict: String) -> String {
+        switch verdict {
+        case "red": return "LIKELY WRONG"
+        case "amber": return "COULDN'T CONFIRM"
+        default: return "CHECKED OUT"
+        }
+    }
+
+    private static func color(_ verdict: String) -> Color {
+        switch verdict {
+        case "red": return .red
+        case "amber": return .orange
+        default: return .green
         }
     }
 }

@@ -44,7 +44,11 @@ Or open `Reigns.xcodeproj` in Xcode and press Run.
       already on screen are history; a chat that sat empty is reported from message 0. Switches are
       detected by page title / mismatched messages; old messages scrolling into view are history.
       Watch it: `log stream --info --predicate 'subsystem == "app.reigns" AND category == "ax"'`
-- [ ] FR-A5 WebSocket · FR-A6/A7 pet levels · FR-A9 Fix it ·
+- [x] FR-A5 engine WebSocket (`Reigns/Networking/EngineClient.swift`): `ws://127.0.0.1:8765/ws`
+      (override with `REIGNS_ENGINE_URL`), reconnect 1 s → 2 s → 5 s, `session.start` first on every
+      connection, queues while offline, new session per conversation. Menu shows engine status.
+- [x] Only the Chat tab is read; the Code tab is skipped (`ignored_mode_titles`)
+- [ ] · FR-A6/A7 pet levels · FR-A9 Fix it ·
       FR-A10 onboarding · FR-A11 mock mode
 
 ## AX tree findings (Day-One Test, PRD §19 Q5)

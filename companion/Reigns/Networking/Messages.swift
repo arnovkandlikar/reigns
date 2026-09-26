@@ -87,3 +87,143 @@ struct Correction: Decodable, Equatable {
         case promptType = "prompt_type"
     }
 }
+
+/// heat.update payload (shared/schemas/heat_update.json).
+struct HeatUpdate: Decodable, Equatable {
+    var heat: Int
+    var level: Int
+    var recovered: Bool = false
+    var redCount: Int = 0
+    var amberCount: Int = 0
+
+    private enum CodingKeys: String, CodingKey {
+        case heat, level, recovered
+        case redCount = "red_count"
+        case amberCount = "amber_count"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        heat = try c.decode(Int.self, forKey: .heat)
+        level = try c.decode(Int.self, forKey: .level)
+        recovered = try c.decodeIfPresent(Bool.self, forKey: .recovered) ?? false
+        redCount = try c.decodeIfPresent(Int.self, forKey: .redCount) ?? 0
+        amberCount = try c.decodeIfPresent(Int.self, forKey: .amberCount) ?? 0
+    }
+}
+
+/// verdicts.update payload (shared/schemas/verdicts_update.json).
+struct VerdictsUpdate: Decodable, Equatable {
+    var messageID: String
+    var claims: [ClaimVerdict]
+
+    private enum CodingKeys: String, CodingKey {
+        case claims
+        case messageID = "message_id"
+    }
+}
+
+struct ClaimVerdict: Decodable, Equatable, Identifiable {
+    var claimID: String
+    var quote: String
+    var type: String
+    var risk: String
+    /// "red" | "amber" | "green" | "skipped"
+    var final: String
+    var detectorResults: [DetectorResult]
+
+    var id: String { claimID }
+
+    private enum CodingKeys: String, CodingKey {
+        case quote, type, risk, final
+        case claimID = "claim_id"
+        case detectorResults = "detector_results"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        claimID = try c.decode(String.self, forKey: .claimID)
+        quote = try c.decode(String.self, forKey: .quote)
+        type = try c.decode(String.self, forKey: .type)
+        risk = try c.decode(String.self, forKey: .risk)
+        final = try c.decode(String.self, forKey: .final)
+        detectorResults = try c.decodeIfPresent([DetectorResult].self, forKey: .detectorResults) ?? []
+    }
+}
+
+struct DetectorResult: Decodable, Equatable {
+    var detector: String
+    var status: String
+    var confidence: Double
+    var evidence: [Evidence]
+    var explanation: String
+
+    private enum CodingKeys: String, CodingKey {
+        case detector, status, confidence, evidence, explanation
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        detector = try c.decode(String.self, forKey: .detector)
+        status = try c.decode(String.self, forKey: .status)
+        confidence = try c.decode(Double.self, forKey: .confidence)
+        evidence = try c.decodeIfPresent([Evidence].self, forKey: .evidence) ?? []
+        explanation = try c.decode(String.self, forKey: .explanation)
+    }
+}
+
+struct Evidence: Decodable, Equatable {
+    var source: String
+    var url: String?
+    var snippet: String
+}
+
+/// error payload (shared/schemas/error.json).
+struct EngineError: Decodable {
+    var code: String
+    var message: String
+}
+
+// §12.1 Companion → Engine payloads.
+
+struct SessionStartPayload: Encodable {
+    var app = "claude"
+    var appVersion: String
+    var companionVersion: String
+
+    private enum CodingKeys: String, CodingKey {
+        case app
+        case appVersion = "app_version"
+        case companionVersion = "companion_version"
+    }
+}
+
+struct MessageNewPayload: Encodable {
+    var messageID: String
+    var role: String
+    var text: String
+    var position: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case role, text, position
+        case messageID = "message_id"
+    }
+}
+
+struct FeedbackDisagreePayload: Encodable {
+    var claimID: String
+    var note: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case note
+        case claimID = "claim_id"
+    }
+}
+
+struct CorrectionInsertedPayload: Encodable {
+    var correctionID: String
+
+    private enum CodingKeys: String, CodingKey {
+        case correctionID = "correction_id"
+    }
+}

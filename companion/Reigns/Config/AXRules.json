@@ -12,6 +12,7 @@
     "skip_dom_id_prefixes": ["mcp-app-"],
     "skip_dom_id_suffixes": ["-label"],
     "skip_dom_classes": ["group/artifact-block"],
+    "ignored_mode_titles": ["Code"],
     "responding_button_titles": ["Stop response", "Stop generating", "Stop"],
     "ignored_texts": ["How is Claude doing this session?"]
   }

@@ -92,6 +92,10 @@ final class ConversationWatcher: @unchecked Sendable {
 
     private func process(_ snapshot: ConversationSnapshot, now: Date) {
         let messages = snapshot.messages
+        if snapshot.isIgnoredMode {
+            emptySince = nil  // not an empty chat, just a tab we don't watch
+            return
+        }
         guard !messages.isEmpty else {
             // Switching conversations blanks the list for a split second; only an empty chat that
             // stays empty (someone about to type their first question) counts as a new chat.

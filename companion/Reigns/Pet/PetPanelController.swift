@@ -10,6 +10,8 @@ final class PetPanelController {
     private static let fadeDuration: TimeInterval = 0.25
 
     let model = PetViewModel()
+    /// FR-A8: I disagree on the top claim → feedback.disagree (sent by the app delegate).
+    var onDisagree: ((String) -> Void)?
 
     /// Set by the app delegate: true while Claude is frontmost and Reigns isn't paused.
     var wantsVisible = false {
@@ -39,11 +41,46 @@ final class PetPanelController {
         }
     }
 
-    /// Level, heat and bubble content (from the engine, or the debug preview).
+    /// Level, heat and bubble content (debug preview).
     func update(level: Int, heat: Int, bubble: BubbleContent?) {
         model.level = level
         model.heat = heat
         model.bubble = bubble
+        positionBubble(animated: true)
+    }
+
+    /// FR-A6: the level is driven only by heat.update.level.
+    func apply(_ heat: HeatUpdate) {
+        model.level = min(max(heat.level, 0), 4)
+        model.heat = heat.heat
+        model.isRecovered = heat.recovered
+        positionBubble(animated: true)
+    }
+
+    func apply(_ bubble: BubbleContent) {
+        model.bubble = bubble
+    }
+
+    /// Merges a reply's verdicts into the conversation's claim list (replacing re-checked claims).
+    func apply(_ verdicts: VerdictsUpdate) {
+        var claims = model.claims
+        for claim in verdicts.claims {
+            if let index = claims.firstIndex(where: { $0.claimID == claim.claimID }) {
+                claims[index] = claim
+            } else {
+                claims.append(claim)
+            }
+        }
+        model.claims = claims
+    }
+
+    /// New conversation: back to Calm with nothing to show until the engine reports.
+    func resetForNewConversation() {
+        model.level = 0
+        model.heat = 0
+        model.isRecovered = false
+        model.bubble = nil
+        model.claims = []
         positionBubble(animated: true)
     }
 
@@ -132,9 +169,9 @@ final class PetPanelController {
                 // FR-A9 (paste into Claude's message box) comes next.
                 Log.pet.info("Fix it tapped (\(correction.promptType.rawValue, privacy: .public))")
             },
-            disagree: { problem in
-                // FR-A5 will send feedback.disagree for this claim.
+            disagree: { [weak self] problem in
                 Log.pet.info("I disagree tapped for claim \(problem.claimID, privacy: .public)")
+                self?.onDisagree?(problem.claimID)
             },
             dismiss: { [weak self] in self?.closeBubble() })
         let tailEdge: HorizontalEdge = PetSide.saved == .right ? .trailing : .leading

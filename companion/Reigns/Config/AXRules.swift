@@ -25,6 +25,9 @@ struct AXRules: Decodable {
         var skipDOMIDPrefixes: [String]
         var skipDOMIDSuffixes: [String]
         var skipDOMClasses: Set<String>
+        /// Claude's mode switch (Chat / Code): when a mode with one of these labels is selected, we
+        /// don't read the window at all.
+        var ignoredModeTitles: Set<String>
         /// Button titles that only exist while Claude is generating (FR-A4 backup signal).
         var respondingButtonTitles: Set<String>
         /// Text runs that are app chrome, not message content (e.g. the feedback survey prompt).
@@ -38,6 +41,7 @@ struct AXRules: Decodable {
             case skipRoles = "skip_roles"
             case ignoredTexts = "ignored_texts"
             case respondingButtonTitles = "responding_button_titles"
+            case ignoredModeTitles = "ignored_mode_titles"
             case skipSubroles = "skip_subroles"
             case skipDOMIDPrefixes = "skip_dom_id_prefixes"
             case skipDOMIDSuffixes = "skip_dom_id_suffixes"
@@ -66,6 +70,7 @@ struct AXRules: Decodable {
             skipDOMIDPrefixes: ["mcp-app-"],
             skipDOMIDSuffixes: ["-label"],
             skipDOMClasses: ["group/artifact-block"],
+            ignoredModeTitles: ["Code"],
             respondingButtonTitles: ["Stop response", "Stop generating", "Stop"],
             ignoredTexts: ["How is Claude doing this session?"]))
 

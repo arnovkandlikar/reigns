@@ -21,6 +21,8 @@ struct ConversationSnapshot {
     var title: String?
     /// Claude is still generating (a "Stop" control is showing), so the newest reply isn't final.
     var isResponding: Bool
+    /// The window is in a mode we don't watch (the Code tab): messages are left empty.
+    var isIgnoredMode = false
 }
 
 /// FR-A3: reads the Claude conversation out of the AX tree.
@@ -53,6 +55,11 @@ struct ConversationReader {
 
         var walker = Walker(rules: rules)
         walker.walk(window, path: [], block: 0, article: nil, inCode: false)
+        if walker.inIgnoredMode {
+            // Code sessions are full of private project facts no detector can verify, and the PRD
+            // scopes Witness to Claude conversations, so we don't read them at all.
+            return ConversationSnapshot(messages: [], title: walker.pageTitle, isResponding: false, isIgnoredMode: true)
+        }
         return ConversationSnapshot(
             messages: Self.segment(walker.items, rules: rules), title: walker.pageTitle,
             isResponding: walker.sawStopControl)
@@ -77,6 +84,7 @@ struct ConversationReader {
         let rules: AXRules.Conversation
         var items: [Item] = []
         var sawStopControl = false
+        var inIgnoredMode = false
         var pageTitle: String?
         var nodeCount = 0
         var nextBlock = 1
@@ -90,6 +98,13 @@ struct ConversationReader {
                let label = AX.string(element, kAXTitleAttribute) ?? AX.string(element, kAXDescriptionAttribute),
                rules.respondingButtonTitles.contains(label) {
                 sawStopControl = true
+            }
+            if role == kAXRadioButtonRole, !inIgnoredMode,
+               let label = AX.string(element, kAXTitleAttribute) ?? AX.string(element, kAXDescriptionAttribute),
+               rules.ignoredModeTitles.contains(label) {
+                var value: AnyObject?
+                AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value)
+                if (value as? Int) == 1 { inIgnoredMode = true }
             }
             if role == "AXWebArea", pageTitle == nil, let title = AX.string(element, kAXTitleAttribute) {
                 pageTitle = title
