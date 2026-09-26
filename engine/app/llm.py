@@ -51,7 +51,6 @@ async def complete_text(
         resp = await _get_client().messages.create(
             model=model_name(),
             max_tokens=max_tokens,
-            temperature=temperature,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
