@@ -88,3 +88,19 @@ async def test_disabled_is_a_noop(monkeypatch):
     await store.record_verdicts(SessionContext(session_id="s"), [claim("a")],
                                 [verdict("a", "red", "contradicted")])
     assert await store.ping() is False
+
+
+def test_client_rebinds_to_new_event_loop(monkeypatch):
+    """Regression: a Motor client reused on a new event loop raised "Event loop is closed"."""
+    import asyncio
+
+    monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:1/?serverSelectionTimeoutMS=100")
+
+    async def grab():
+        a, b = store.get_db(), store.get_db()
+        assert a is b  # same loop → same client
+        return a
+
+    first = asyncio.run(grab())
+    second = asyncio.run(grab())  # new loop → fresh client, not the closed one
+    assert first is not second
