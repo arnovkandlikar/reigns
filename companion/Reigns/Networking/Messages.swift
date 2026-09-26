@@ -231,3 +231,15 @@ struct CorrectionInsertedPayload: Encodable {
         case correctionID = "correction_id"
     }
 }
+
+/// voice.play payload (shared/schemas/voice_play.json).
+struct VoicePlay: Decodable {
+    var text: String
+    var audioB64: String
+    var level: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case text, level
+        case audioB64 = "audio_b64"
+    }
+}

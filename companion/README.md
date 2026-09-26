@@ -55,6 +55,12 @@ Or open `Reigns.xcodeproj` in Xcode and press Run.
 - [x] FR-A7 accessories: always-visible heat badge; "?" badge with unverified (amber) count at
       levels 1–2; sweat drop + waving red flag at ≥ 3; nostril steam + "START FRESH?" sign at 4
       (bubble opens above the sign).
+- [x] FR-A8 speech bubble complete (Fix it wired to FR-A9)
+- [x] FR-A9 Fix it (`Reigns/AX/ComposerInserter.swift`): finds the message box (AXTextArea with DOM
+      class `ProseMirror`), asks inline "Replace / Add to it" if it already has text, activates
+      Claude, focuses the box, saves the clipboard, pastes with ⌘V, restores the clipboard after
+      300 ms, sends `correction.inserted`. Never presses Enter. If the box can't be found the prompt
+      is left on the clipboard and the bubble says to press ⌘V (PRD R2).
 - [ ] · FR-A6/A7 pet levels · FR-A9 Fix it ·
       FR-A10 onboarding · FR-A11 mock mode
 

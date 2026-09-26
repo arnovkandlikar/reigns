@@ -15,6 +15,8 @@ final class PetPanelController {
     let model = PetViewModel()
     /// FR-A8: I disagree on the top claim → feedback.disagree (sent by the app delegate).
     var onDisagree: ((String) -> Void)?
+    /// FR-A9: Fix it (mode nil = not chosen yet; the app delegate checks the message box first).
+    var onFixIt: ((Correction, ComposerInserter.Mode?) -> Void)?
 
     /// Set by the app delegate: true while Claude is frontmost and Reigns isn't paused.
     var wantsVisible = false {
@@ -162,9 +164,25 @@ final class PetPanelController {
         model.isBubbleOpen ? closeBubble() : openBubble()
     }
 
+    /// FR-A9: ask inline whether to replace or add to the user's text.
+    func askReplaceOrAdd(_ correction: Correction) {
+        model.pendingFix = correction
+    }
+
+    /// FR-A9 R2 fallback: the prompt is on the clipboard for the user to paste.
+    func showFixNote(_ note: String) {
+        model.fixNote = note
+    }
+
+    func closeBubbleAfterFix() {
+        closeBubble()
+    }
+
     private func openBubble() {
         model.isBubbleOpen = true
         model.isDetailsOpen = false
+        model.pendingFix = nil
+        model.fixNote = nil
         setBubbleContent()
         positionBubble(animated: false)
         bubblePanel.show()
@@ -173,14 +191,20 @@ final class PetPanelController {
     private func closeBubble() {
         model.isBubbleOpen = false
         model.isDetailsOpen = false
+        model.pendingFix = nil
+        model.fixNote = nil
         bubblePanel.hide()
     }
 
     private func setBubbleContent() {
         let actions = BubbleActions(
-            fixIt: { correction in
-                // FR-A9 (paste into Claude's message box) comes next.
+            fixIt: { [weak self] correction in
                 Log.pet.info("Fix it tapped (\(correction.promptType.rawValue, privacy: .public))")
+                self?.onFixIt?(correction, nil)
+            },
+            fixChoice: { [weak self] correction, mode in
+                self?.model.pendingFix = nil
+                if let mode { self?.onFixIt?(correction, mode) }
             },
             disagree: { [weak self] problem in
                 Log.pet.info("I disagree tapped for claim \(problem.claimID, privacy: .public)")

@@ -6,6 +6,8 @@ struct AXRules: Decodable {
     var claudeBundleID: String
     var petInsetPx: Double
     var windowPollMs: Int
+    /// FR-A9: Claude's message box is the AXTextArea with this DOM class.
+    var composerDOMClass: String
     var conversation: Conversation
 
     /// FR-A3: how messages are found in Claude's AX tree (see ConversationReader).
@@ -53,6 +55,7 @@ struct AXRules: Decodable {
         case claudeBundleID = "claude_bundle_id"
         case petInsetPx = "pet_inset_px"
         case windowPollMs = "window_poll_ms"
+        case composerDOMClass = "composer_dom_class"
         case conversation
     }
 
@@ -60,6 +63,7 @@ struct AXRules: Decodable {
         claudeBundleID: "com.anthropic.claudefordesktop",
         petInsetPx: 24,
         windowPollMs: 250,
+        composerDOMClass: "ProseMirror",
         conversation: Conversation(
             userHeadingPrefix: "You said: ",
             assistantHeadingPrefix: "Claude responded: ",

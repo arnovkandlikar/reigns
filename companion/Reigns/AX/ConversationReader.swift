@@ -89,9 +89,32 @@ struct ConversationReader {
         var nodeCount = 0
         var nextBlock = 1
 
-        mutating func walk(_ element: AXUIElement, path: [Int], block: Int, article: Article?, inCode: Bool) {
-            guard nodeCount < ConversationReader.maxNodes, path.count < ConversationReader.maxDepth else { return }
-            nodeCount += 1
+        /// One element waiting to be visited, with the context it inherits from its ancestors.
+        private struct Pending {
+            let element: AXUIElement
+            let path: [Int]
+            let block: Int
+            let article: Article?
+            let inCode: Bool
+        }
+
+        /// Pre-order walk (document order) with an explicit stack instead of recursion: this runs
+        /// on a background queue with a small thread stack, and deeply nested replies overflowed it.
+        mutating func walk(_ root: AXUIElement, path: [Int], block: Int, article: Article?, inCode: Bool) {
+            var stack = [Pending(element: root, path: path, block: block, article: article, inCode: inCode)]
+            while let next = stack.popLast() {
+                guard nodeCount < ConversationReader.maxNodes else { return }
+                guard next.path.count < ConversationReader.maxDepth else { continue }
+                nodeCount += 1
+                // Children are pushed in reverse so they pop in document order.
+                stack.append(contentsOf: visit(next).reversed())
+            }
+        }
+
+        /// Records what `pending` contributes and returns its children to visit.
+        private mutating func visit(_ pending: Pending) -> [Pending] {
+            let element = pending.element
+            let path = pending.path
 
             let role = AX.string(element, kAXRoleAttribute) ?? ""
             if role == kAXButtonRole, !sawStopControl,
@@ -109,22 +132,22 @@ struct ConversationReader {
             if role == "AXWebArea", pageTitle == nil, let title = AX.string(element, kAXTitleAttribute) {
                 pageTitle = title
             }
-            if rules.skipRoles.contains(role) { return }
+            if rules.skipRoles.contains(role) { return [] }
             let subrole = AX.string(element, kAXSubroleAttribute) ?? ""
-            if rules.skipSubroles.contains(subrole) || isSkippedByDOM(element, role: role) { return }
+            if rules.skipSubroles.contains(subrole) || isSkippedByDOM(element, role: role) { return [] }
 
             if role == kAXHeadingRole, let messageRole = headingRole(element) {
-                items.append(.heading(messageRole, article: article, path: path))
-                return  // the heading's own text is a screen-reader summary, not message content
+                items.append(.heading(messageRole, article: pending.article, path: path))
+                return []  // the heading's own text is a screen-reader summary, not message content
             }
             if role == kAXStaticTextRole {
                 if let value = AX.string(element, kAXValueAttribute) {
-                    items.append(.text(value, block: block, path: path, inCode: inCode))
+                    items.append(.text(value, block: pending.block, path: path, inCode: pending.inCode))
                 }
-                return
+                return []
             }
 
-            var article = article
+            var article = pending.article
             if subrole == "AXDocumentArticle" {
                 let label = AX.string(element, kAXTitleAttribute) ?? AX.string(element, kAXDescriptionAttribute) ?? ""
                 // "Message 12" (Code tab) or "Message 12 of 40" (Chat tab).
@@ -138,15 +161,15 @@ struct ConversationReader {
             let isInline = subrole.hasSuffix("StyleGroup") || role == "AXLink"
             let childBlock: Int
             if isInline {
-                childBlock = block
+                childBlock = pending.block
             } else {
                 childBlock = nextBlock
                 nextBlock += 1
             }
 
-            for (index, child) in AX.children(element).enumerated() {
-                walk(child, path: path + [index], block: childBlock, article: article,
-                     inCode: inCode || subrole == "AXCodeStyleGroup")
+            let childInCode = pending.inCode || subrole == "AXCodeStyleGroup"
+            return AX.children(element).enumerated().map { index, child in
+                Pending(element: child, path: path + [index], block: childBlock, article: article, inCode: childInCode)
             }
         }
 

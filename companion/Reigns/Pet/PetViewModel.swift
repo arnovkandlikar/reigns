@@ -14,6 +14,10 @@ final class PetViewModel {
     var unverifiedCount = 0
     /// Every checked claim in this conversation (merged from verdicts.update), for Details.
     var claims: [ClaimVerdict] = []
+    /// FR-A9: Claude's message box already has text; waiting for Replace / Add to it.
+    var pendingFix: Correction?
+    /// FR-A9 fallback note shown in the bubble (e.g. "Press ⌘V in Claude").
+    var fixNote: String?
     var isBubbleOpen = false
     var isDetailsOpen = false
 }

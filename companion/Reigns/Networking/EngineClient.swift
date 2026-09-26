@@ -17,6 +17,7 @@ final class EngineClient: NSObject {
     var onHeat: ((HeatUpdate) -> Void)?
     var onBubble: ((BubbleContent) -> Void)?
     var onVerdicts: ((VerdictsUpdate) -> Void)?
+    var onVoice: ((VoicePlay) -> Void)?
 
     private static let backoff: [TimeInterval] = [1, 2, 5]
     private static let maxQueued = 200
@@ -214,7 +215,7 @@ final class EngineClient: NSObject {
                 let error = try decoder.decode(Body<EngineError>.self, from: data).payload
                 Log.net.error("Engine error \(error.code, privacy: .public): \(error.message, privacy: .public)")
             case "voice.play":
-                Log.net.info("voice.play received (playback not implemented yet)")
+                onVoice?(try decoder.decode(Body<VoicePlay>.self, from: data).payload)
             default:
                 Log.net.info("Ignoring unknown message type \(type, privacy: .public)")
             }
