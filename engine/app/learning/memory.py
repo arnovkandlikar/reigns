@@ -660,6 +660,12 @@ async def on_verdicts(
     SUBJECT (so later matching is by subject, not wording), and the kind (only world facts are
     memorised as verified facts).
     """
+    try:  # keep the session brief current (background, never blocks or raises)
+        from app.detectors import session_brief
+
+        session_brief.schedule(session)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("session brief schedule failed: %r", exc)
     try:
         from app.detectors.claim_gate import peek  # local import: memory must not need detectors
 
