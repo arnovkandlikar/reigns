@@ -103,6 +103,13 @@ class HeatState:
         self._decay_anchor = now if self.heat else None
         self.contributions.clear()
 
+    def show_now(self, now: float) -> int:
+        """A judged reply is a real event, not flicker: show its level immediately instead of
+        waiting out the 2 s hysteresis (which still smooths decay-driven changes)."""
+        self.displayed_level = self.target_level(now)
+        self._pending_level = None
+        return self.displayed_level
+
     # --- reads ------------------------------------------------------------------------------
     def target_level(self, now: float) -> int:
         """Level implied by current heat, ignoring hysteresis (used for bubble content)."""
