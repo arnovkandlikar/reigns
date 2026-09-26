@@ -230,6 +230,9 @@ def test_judge_is_told_not_to_infer_contradictions():
     from app.detectors.claim_verifier import JUDGE_SYSTEM
 
     assert "DIRECTLY" in JUDGE_SYSTEM and "indirect" in JUDGE_SYSTEM
+    # live scenario_code_api: "requests retries argument" was marked supported from snippets
+    # about urllib3's Retry — support must be about the same subject.
+    assert "SAME fact about the SAME subject" in JUDGE_SYSTEM
 
 
 async def test_unverified_shows_no_unrelated_evidence(session):

@@ -83,6 +83,10 @@ Rules:
 - "quote" MUST be copied character-for-character from ONE snippet, and must be the sentence
   or phrase that proves your verdict. For "unverified" use "".
 - "evidence_index" is the number of the snippet you quoted (null for "unverified").
+- "supported" ONLY when a snippet states the SAME fact about the SAME subject (same person,
+  place, library, function, parameter …). A related or general fact is NOT support: e.g.
+  "urllib3 has a Retry class" does not support "requests.get() has a retries argument".
+  If the snippets are only about something nearby, answer "unverified".
 - "contradicted" ONLY when a snippet DIRECTLY states a conflicting fact about the SAME
   subject. Do not reason from indirect facts (birth dates, related events, "so it couldn't
   have …"), and be careful with people who may merely share a name. If you have to infer,
