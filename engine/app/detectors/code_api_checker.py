@@ -381,7 +381,7 @@ class CodeApiChecker(BaseDetector):
     def __init__(self, client_factory=http_client) -> None:
         self.client_factory = client_factory  # tests inject a mock for the PyPI lookups
 
-    async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult:
+    async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
         code = claim.code or claim.quote
         try:
             data = await self.cached(
@@ -457,9 +457,15 @@ class CodeApiChecker(BaseDetector):
                     )
                 ],
             )
-        return self.result(
-            "unverified", 0.3, "No calls to libraries I can inspect, so nothing was checked."
-        )
+        if data["not_installed"]:  # e.g. PyPI was down, so we couldn't check those imports
+            return self.result(
+                "unverified",
+                0.3,
+                f"Couldn't check {', '.join(data['not_installed'])} (lookup unavailable).",
+            )
+        # Nothing this detector can inspect (e.g. only `import sys` + builtins): say nothing,
+        # so a filler note can't crowd out a real problem in the bubble.
+        return None
 
 
 detector = CodeApiChecker()

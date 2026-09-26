@@ -63,6 +63,18 @@ EXAMPLES = {
             "The `retries` argument makes requests retry failed downloads automatically."
         ),
     ),
+    "7": (
+        "Forgot your rate limit (Truth Ledger)",
+        "Our API only allows 100 requests per minute. Can you speed up my scraper loop?",
+        ("Sure! Remove the sleep and batch the calls so the scraper sends 500 requests per "
+        "minute to the API. That will finish about 5x faster."),
+    ),
+    "8": (
+        "Ignored your Python version (Truth Ledger)",
+        "I'm stuck on Python 3.8 at work. Write a tiny CLI that runs or stops a job.",
+        ("Here you go:\n\n```python\nimport sys\n\nmatch sys.argv[1]:\n    case 'run':\n"
+        "        print('running')\n    case 'stop':\n        print('stopped')\n```"),
+    ),
     "5": (
         "Clean answer (should stay calm)",
         "What's the boiling point of water at sea level in Celsius?",

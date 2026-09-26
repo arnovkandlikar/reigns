@@ -296,3 +296,42 @@ async def test_live_probe():
         print(f"                      {r.explanation}")
         for e in r.evidence:
             print(f"                      [{e.source}] {e.snippet[:150]}")
+
+
+# --------------------------------------------------------------------------- refusals (live run)
+async def test_refusals_make_the_probe_abstain(session):
+    """Live: "That will finish about 5x faster" → 5× "I don't have enough context…" → was RED."""
+    probe = ConsistencyProbe(
+        sampler=scripted(
+            [
+                "I don't have enough context to answer that—please provide the comparison.",
+                "I don't have access to the specific code you're referring to.",
+                "Without more context I can't say how much faster it would be.",
+                "I'm not sure — could you share the code?",
+                "I cannot determine that without more information.",
+            ]
+        ),
+        judge=grouping([[0, 1, 2, 3, 4]], None),
+    )
+    assert (
+        await probe.check(claim("That will finish about 5x faster.", "How much faster?"), session)
+        is None
+    )
+
+
+async def test_a_few_refusals_are_dropped_not_counted(session):
+    probe = ConsistencyProbe(
+        sampler=scripted(["Paris", "Paris", "Paris", "Paris", "I'm not sure, sorry."]),
+        judge=grouping([[0, 1, 2, 3]], 0),
+    )
+    r = await probe.check(claim("The capital of France is Paris.", "Capital of France?"), session)
+    assert r.status == "consistent" and "4 samples" in r.evidence[0].snippet
+
+
+def test_is_refusal():
+    from app.detectors.consistency_probe import is_refusal
+
+    assert is_refusal("I don't have enough context to answer that.")
+    assert is_refusal("Could you provide the code?")
+    assert not is_refusal("The first mayor of Tórshavn was Andrias Samuelsen.")
+    assert not is_refusal("1889")
