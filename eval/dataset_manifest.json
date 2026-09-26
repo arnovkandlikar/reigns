@@ -1,0 +1,26 @@
+{
+  "seed": 7,
+  "total_cases": 200,
+  "sources": {
+    "halueval_qa": {
+      "url": "https://raw.githubusercontent.com/RUCAIBox/HaluEval/main/data/qa_data.json",
+      "sha256": "89ed139ec5e3a3169a0b30e45569ac1283846f76f27f7bb5e908ee6deed57e88",
+      "cases": 50
+    },
+    "halueval_summary": {
+      "url": "https://raw.githubusercontent.com/RUCAIBox/HaluEval/main/data/summarization_data.json",
+      "sha256": "86d2561eeb4271eb50b6bd90c9fd38636d30eaf4e98b648045f221adb1c2c758",
+      "cases": 50
+    },
+    "truthfulqa": {
+      "url": "https://raw.githubusercontent.com/sylinrl/TruthfulQA/main/TruthfulQA.csv",
+      "sha256": "b8d8ef1e12f98b4f2a9f47abc9765da0640b182b6c5d9b92f0c1a1f2f1e02e5c",
+      "cases": 50
+    },
+    "fever": {
+      "url": "https://fever.ai/download/fever/shared_task_dev.jsonl",
+      "sha256": "e89865bfe1b4dd054e03dd57d7241a6fde24862905f31117cf0cd719f7c78df7",
+      "cases": 50
+    }
+  }
+}
