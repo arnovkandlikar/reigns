@@ -132,3 +132,49 @@ MIT licensed, TruthfulQA is Apache 2.0, and
 Wikipedia attribution and share-alike terms. These public seed cases are
 learning inputs. They are separate from `trap_prompts.jsonl` and do not count
 as captured model answers or independent evaluation results.
+
+## Prompt bandit learning rounds (FR-L7)
+
+`learning_rounds.py` evaluates the Course Correct Thompson sampler over five
+seeded rounds, compares it with always choosing v1, reports the selected variant
+by failure type, and scores the final choices on a held-out set. It writes
+`learning_rounds.md` and `learning_rounds.png`. This is an offline replay of
+captured outcomes; it does not generate replies or write bandit state to Atlas.
+
+Before running it, create `learning_outcomes.jsonl`. Each row represents one
+original trap prompt and must include an independently checked outcome for all
+three prompt variants, each captured in a separate copy of the same conversation:
+
+```json
+{"id":"citation-02","failure_type":"fabricated_sources","prompt_type":"diagnostic_reset","split":"train","answer_origin":"recorded_model","label_origin":"independently_checked","outcomes":{"v1":true,"v2":false,"v3":true}}
+```
+
+Use `split: "train"` for cases the sampler can learn from and `split:
+"holdout"` for about ten cases excluded from all updates. Assign splits before
+reviewing outcomes and keep them fixed. Each outcome is `true` only when a
+person checked that the recorded next reply corrected the targeted claim.
+
+To capture the variants, run the engine with `WITNESS_PROMPT_VARIANT=v1`,
+`v2`, or `v3` and record a fresh reply after inserting that variant's prompt.
+Unset the variable for normal Thompson sampling. For example, from PowerShell:
+
+```powershell
+$env:WITNESS_PROMPT_VARIANT = "v2"
+uvicorn app.main:app --port 8765 --reload --env-file ../.env
+```
+
+Restart with the next variant for each separate capture. The override only
+selects the prompt during controlled capture; it does not change trial counts.
+
+After the input contains training and held-out cases, run:
+
+```bash
+python eval/learning_rounds.py --seed 7
+```
+
+Bandit arms are tracked by failure type and prompt type, matching the engine's
+variant IDs. The current seven scripted trap fixtures do not include three independently
+checked follow-ups per case, so they cannot produce an FR-L7 result. The runner
+rejects missing or unverified outcome data instead of creating a synthetic
+learning curve. Do not describe results from this seeded replay as general
+model performance.
