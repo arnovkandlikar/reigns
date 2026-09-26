@@ -20,6 +20,8 @@ final class PetPanelController {
     /// Bubble voice controls.
     var onReplayVoice: (() -> Void)?
     var onToggleMute: (() -> Void)?
+    /// Session Brief: paste the refresh (mode nil = not chosen yet).
+    var onBriefAccept: ((BriefOffer, ComposerInserter.Mode?) -> Void)?
 
     /// Set by the app delegate: true while Claude is frontmost and Reigns isn't paused.
     var wantsVisible = false {
@@ -64,6 +66,7 @@ final class PetPanelController {
 
     /// FR-A6: the level is driven only by heat.update.level.
     func apply(_ heat: HeatUpdate) {
+        if heat.level >= 2, model.briefOffer != nil { clearBriefOffer() }
         withAnimation(expressionSpring) {
             model.level = min(max(heat.level, 0), 4)
             model.heat = heat.heat
@@ -82,6 +85,8 @@ final class PetPanelController {
 
     func apply(_ bubble: BubbleContent) {
         model.bubble = bubble
+        // A warning replaces a context-refresh offer.
+        if bubble.level >= 2, model.briefOffer != nil { clearBriefOffer() }
         // Something's wrong and the user hasn't looked yet: nudge them to click.
         if (bubble.level >= 1 || !bubble.problems.isEmpty) && !model.isBubbleOpen {
             model.hasUnseenIssue = true
@@ -183,6 +188,35 @@ final class PetPanelController {
         model.isBubbleOpen ? closeBubble() : openBubble()
     }
 
+    // MARK: - Session Brief offer
+
+    /// Shows the calm "context refresh" offer. Ignored while the pet is warning (level ≥ 2).
+    /// Doesn't touch heat or animation.
+    func showBriefOffer(_ offer: BriefOffer) {
+        guard model.level < 2 else { return }
+        model.briefOffer = offer
+        model.pendingBrief = nil
+        if model.isBubbleOpen {
+            positionBubble(animated: true)
+        } else {
+            openBubble()
+        }
+    }
+
+    func askReplaceOrAddBrief(_ offer: BriefOffer) {
+        model.pendingBrief = offer
+    }
+
+    func closeBubbleAfterBrief() {
+        clearBriefOffer()
+        closeBubble()
+    }
+
+    private func clearBriefOffer() {
+        model.briefOffer = nil
+        model.pendingBrief = nil
+    }
+
     /// FR-A9: ask inline whether to replace or add to the user's text.
     func askReplaceOrAdd(_ correction: Correction) {
         model.pendingFix = correction
@@ -232,6 +266,12 @@ final class PetPanelController {
             },
             dismiss: { [weak self] in self?.closeBubble() },
             replayVoice: { [weak self] in self?.onReplayVoice?() },
+            acceptBrief: { [weak self] offer in self?.onBriefAccept?(offer, nil) },
+            briefChoice: { [weak self] offer, mode in
+                self?.model.pendingBrief = nil
+                if let mode { self?.onBriefAccept?(offer, mode) }
+            },
+            dismissBrief: { [weak self] in self?.closeBubbleAfterBrief() },
             toggleMute: { [weak self] in self?.onToggleMute?() })
         let tailEdge: HorizontalEdge = PetSide.saved == .right ? .trailing : .leading
         bubblePanel.setContent(BubbleView(model: model, actions: actions, tailEdge: tailEdge))

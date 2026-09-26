@@ -53,6 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.finishScan(verdicts.messageID)
         }
         engine.onError = { [weak self] _ in self?.clearScans() }
+        engine.onBriefOffer = { [weak self] offer in self?.pet.showBriefOffer(offer) }
+        pet.onBriefAccept = { [weak self] offer, mode in self?.pasteBrief(offer, mode: mode) }
         pet.onReplayVoice = { [weak self] in
             guard let self, let line = self.lastVoice else { return }
             self.voice.play(line)  // an explicit replay plays even when muted
@@ -220,6 +222,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
+    /// Session Brief: paste the context refresh into Claude's message box, the same way Fix it does.
+    /// Never presses Enter (the user sends it), and it isn't a correction, so no correction.inserted.
+    private func pasteBrief(_ offer: BriefOffer, mode: ComposerInserter.Mode?) {
+        guard let app = frontmostClaude
+            ?? NSRunningApplication.runningApplications(withBundleIdentifier: rules.claudeBundleID).first
+        else { return }
+
+        var chosen = mode ?? .replace
+        if mode == nil {
+            switch inserter.state(pid: app.processIdentifier) {
+            case .hasText:
+                pet.askReplaceOrAddBrief(offer)
+                return
+            case .empty, .notFound:
+                chosen = .replace
+            }
+        }
+
+        inserter.insert(offer.text, into: app, mode: chosen) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+            case .inserted:
+                Log.pet.info("Context refresh pasted (\(offer.reason, privacy: .public))")
+                self.pet.closeBubbleAfterBrief()
+            case .copiedToClipboard:
+                self.pet.showFixNote("Couldn't reach Claude's message box. The refresh is on your clipboard: click the box and press ⌘V.")
+            }
+        }
+    }
+
+    #if DEBUG
+    /// Debug menu / demo: show a sample context-refresh offer without the engine.
+    func previewBriefOffer() {
+        pet.showBriefOffer(.sample)
+    }
+    #endif
 
     private func claudeVersion() -> String {
         let app = frontmostClaude

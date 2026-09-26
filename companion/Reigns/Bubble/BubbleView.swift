@@ -8,6 +8,9 @@ struct BubbleActions {
     var disagree: (BubbleProblem) -> Void
     var dismiss: () -> Void
     var replayVoice: () -> Void = {}
+    var acceptBrief: (BriefOffer) -> Void = { _ in }
+    var briefChoice: (BriefOffer, ComposerInserter.Mode?) -> Void = { _, _ in }
+    var dismissBrief: () -> Void = {}
     var toggleMute: () -> Void = {}
 }
 
@@ -27,7 +30,11 @@ struct BubbleView: View {
 
     var body: some View {
         VStack(alignment: tailEdge == .trailing ? .trailing : .leading, spacing: 0) {
-            card
+            if let offer = model.briefOffer {
+                BriefOfferCard(offer: offer, pending: model.pendingBrief, note: model.fixNote, actions: actions)
+            } else {
+                card
+            }
             BubbleTail()
                 .fill(.regularMaterial)
                 .frame(width: 20, height: 10)
@@ -281,6 +288,67 @@ private struct ClaimRow: View {
         case "amber": return .orange
         default: return .green
         }
+    }
+}
+
+/// Session Brief offer: calm and non-alarming (no level colours or warning styling).
+private struct BriefOfferCard: View {
+    let offer: BriefOffer
+    let pending: BriefOffer?
+    let note: String?
+    let actions: BubbleActions
+
+    private static let accent = Color(red: 0.35, green: 0.55, blue: 0.85)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "text.bubble")
+                Text("Context refresh").font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundStyle(.secondary)
+
+            Text(offer.headline)
+                .font(.system(size: 13, weight: .medium))
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let note {
+                Text(note)
+                    .font(.system(size: 12, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let pending {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Claude's message box already has text. Replace it or add to it?")
+                        .font(.system(size: 12))
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 6) {
+                        Button("Replace") { actions.briefChoice(pending, .replace) }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Self.accent)
+                        Button("Add to it") { actions.briefChoice(pending, .append) }
+                        Spacer(minLength: 0)
+                        Button("Cancel") { actions.briefChoice(pending, nil) }
+                    }
+                    .controlSize(.small)
+                }
+            } else {
+                HStack(spacing: 6) {
+                    Button(offer.action) { actions.acceptBrief(offer) }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Self.accent)
+                    Spacer(minLength: 0)
+                    Button("Not now") { actions.dismissBrief() }
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 1))
     }
 }
 
