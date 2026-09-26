@@ -42,11 +42,13 @@ def route(claim: Claim) -> list[str]:
     if claim.type in ("paper", "url", "package"):
         return ["reference_auditor"]
     if claim.type == "code_api":
-        return ["code_api_checker"]
+        return ["code_api_checker", "memory_consistency"]
     if claim.type == "source_summary":
         return ["source_faithfulness"]
     if claim.type in ("fact", "number", "other", "code"):
-        return ["claim_verifier"]
+        # memory_consistency (Role C) returns None when nothing relevant was said earlier,
+        # so it never changes a verdict unless the claim clashes with the user's own facts.
+        return ["claim_verifier", "memory_consistency"]
     return []
 
 

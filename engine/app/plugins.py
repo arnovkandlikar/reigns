@@ -35,6 +35,7 @@ DETECTOR_NAMES = [
     "claim_verifier",
     "consistency_probe",
     "code_api_checker",
+    "memory_consistency",
     "pushback",
     "source_faithfulness",
 ]
