@@ -269,3 +269,31 @@ def snippet(text: str, limit: int = SNIPPET_MAX) -> str:
     """Single-line, length-capped evidence snippet."""
     flat = _SPACES.sub(" ", text).strip()
     return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
+
+
+# ---------------------------------------------------------------------------
+# Is this a checkable fact at all? (long-chat false alarms, Assurant feedback)
+# ---------------------------------------------------------------------------
+_IMPERATIVE = re.compile(
+    r"^\s*(?:(?:just|simply|then|first|next|now|also|so|instead|finally|and|or)\s+)*"
+    r"(read|use|set|call|sleep|add|remove|install|run|create|make|write|try|check|store|save|"
+    r"load|pass|return|import|open|replace|wrap|put|keep|change|update|configure|define|send|"
+    r"fetch|loop|batch|avoid|consider|switch|start|stop|collect|build|move|drop|fill|sort|"
+    r"deploy|upload|copy|paste|click|go|let's|lets|note|remember|make sure|don't|do not)\b",
+    re.IGNORECASE,
+)
+_HERE_IS = re.compile(
+    r"^\s*(here(?:'s| is| are)|below is|this (?:code|snippet|script))\b", re.IGNORECASE
+)
+
+
+def looks_like_instruction(text: str) -> bool:
+    """Advice / instructions / code intros are not facts a source can confirm.
+
+    "Sleep 0.6 seconds between calls…", "Read it from the response and fall back to 60 seconds
+    if it's missing:" — the long-chat replay showed these being fact-checked, coming back
+    "unverified", and (via the Consistency Probe asked out of context) even red. Checking them
+    only produces false alarms, so detectors that search the world abstain on them.
+    """
+    t = (text or "").strip()
+    return bool(t) and (bool(_IMPERATIVE.match(t)) or bool(_HERE_IS.match(t)) or t.endswith(":"))

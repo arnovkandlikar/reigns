@@ -29,7 +29,8 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from app.detectors.base import BaseDetector, normalize_text, snippet
+from app.detectors.base import BaseDetector, looks_like_instruction, normalize_text, snippet
+from app.detectors.claim_gate import gate
 from app.llm import LLMError, complete_json, complete_text, fast_model_name
 from app.models import Claim, DetectorResult, Evidence, SessionContext
 
@@ -46,7 +47,11 @@ best answer even if you are unsure."""
 
 QUESTION_SYSTEM = """Turn a factual claim into the short, neutral question it answers, WITHOUT
 revealing the answer. Example: claim "The first mayor of Tórshavn was Jógvan Poulsen." →
-"Who was the first mayor of Tórshavn?". Return {"question": "..."}"""
+"Who was the first mayor of Tórshavn?".
+The question must be answerable by someone who has NOT seen the conversation. If the claim is
+advice, an instruction, an opinion, arithmetic about the user's own setup, or only makes sense
+with earlier context ("it", "that function", "the second option"), return {"question": null}.
+Return {"question": "..."} or {"question": null}."""
 
 GROUP_SYSTEM = """You compare short answers to the same question and group them by MEANING.
 Two answers are in the same group if they give the same specific answer, even if worded
@@ -129,16 +134,33 @@ def clean_groups(raw: Any, n: int) -> list[list[int]]:
 class ConsistencyProbe(BaseDetector):
     name = "consistency_probe"
 
-    def __init__(self, sampler: TextFn | None = None, judge: JsonFn | None = None) -> None:
+    def __init__(
+        self,
+        sampler: TextFn | None = None,
+        judge: JsonFn | None = None,
+        gate_judge: JsonFn | None = None,
+    ) -> None:
+        self.gate_judge = gate_judge
         # Injectable so tests run offline with scripted answers.
         self.sampler: TextFn = sampler or complete_text
         self.judge: JsonFn = judge or complete_json
 
     async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
+        if looks_like_instruction(claim.quote):
+            return None  # re-asking advice out of context only produces false alarms
+        g = await gate(claim, session, self.gate_judge)
+        if not g.checkable:
+            return None  # only world facts can be re-asked meaningfully
+        if g.source == "llm":
+            # The gate saw the conversation: its question is answerable by a stranger, while
+            # the extractor's may still say "it"/"that route".
+            claim = g.resolved(claim).model_copy(update={"question": g.question})
         question = claim.question if is_open_question(claim.question) else None
         question = question or await self.cached(
             session, f"question:{normalize_text(claim.normalized)}", lambda: self._question(claim)
         )
+        if not question:
+            return None  # not a standalone fact (the question writer said so)
         data = await self.cached(
             session,
             f"probe:{normalize_text(question)}|{normalize_text(claim.normalized)}",
@@ -151,10 +173,10 @@ class ConsistencyProbe(BaseDetector):
         data = await self.judge(
             QUESTION_SYSTEM, f"CLAIM: {claim.normalized}", max_tokens=100, model=fast_model_name()
         )
-        q = str((data or {}).get("question") or "").strip() if isinstance(data, dict) else ""
-        if not q:
+        if not isinstance(data, dict):
             raise LLMError("could not turn the claim into a question")
-        return q
+        # "" = not a standalone, checkable fact → the probe abstains (cached like a question)
+        return str(data.get("question") or "").strip()
 
     async def _probe(self, question: str, claim: Claim) -> dict[str, Any]:
         """Sample, group, score. Returns plain data so it can live in session.cache."""

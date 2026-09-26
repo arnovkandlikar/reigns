@@ -608,6 +608,7 @@ def cards_from_verdicts(claims: list[Claim], verdicts: list[ClaimVerdict]) -> li
             ):
                 out.append(
                     {
+                        "claim_id": claim.claim_id,
                         "kind": "verified_fact",
                         "text": claim.normalized,
                         "source": r.detector,
@@ -618,6 +619,7 @@ def cards_from_verdicts(claims: list[Claim], verdicts: list[ClaimVerdict]) -> li
             if v.final == "red" and r.status == "contradicted" and r.confidence >= 0.8:
                 out.append(
                     {
+                        "claim_id": claim.claim_id,
                         "kind": "correction",
                         "text": r.explanation or claim.normalized,
                         "source": r.detector,
@@ -651,12 +653,37 @@ async def on_user_message(session: SessionContext, message: Any, judge=None) -> 
 async def on_verdicts(
     session: SessionContext, claims: list[Claim], verdicts: list[ClaimVerdict]
 ) -> list[MemoryCard]:
-    """After a reply is judged: store evidence-backed facts and corrections."""
+    """After a reply is judged: store evidence-backed facts and corrections.
+
+    Uses the Claim Gate's view of each claim when available: the STANDALONE text (so a fragment
+    like "first released in 2010" is stored as "Flask was first released in 2010"), the
+    SUBJECT (so later matching is by subject, not wording), and the kind (only world facts are
+    memorised as verified facts).
+    """
     try:
+        from app.detectors.claim_gate import peek  # local import: memory must not need detectors
+
         uid = user_id_for(session)
+        resolved, subjects = [], {}
+        for c in claims:
+            g = peek(session, c.claim_id)
+            if g is not None:
+                if g.kind not in ("world_fact", "unknown"):
+                    continue  # advice/opinions/user context are never "verified facts"
+                if g.source == "llm":
+                    c = g.resolved(c)  # store the context-resolved text, not a fragment
+                    subjects[c.claim_id] = g.subject
+            resolved.append(c)
         stored = []
-        for c in cards_from_verdicts(claims, verdicts):
-            card, _ = await add_card(uid, c["kind"], c["text"], "", c["source"], c["confidence"])
+        for c in cards_from_verdicts(resolved, verdicts):
+            card, _ = await add_card(
+                uid,
+                c["kind"],
+                c["text"],
+                subjects.get(c["claim_id"], ""),
+                c["source"],
+                c["confidence"],
+            )
             stored.append(card)
         return stored
     except Exception as exc:  # noqa: BLE001

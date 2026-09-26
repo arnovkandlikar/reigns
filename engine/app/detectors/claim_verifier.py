@@ -37,9 +37,11 @@ from app.detectors.base import (
     BaseDetector,
     content_words,
     http_client,
+    looks_like_instruction,
     normalize_text,
     snippet,
 )
+from app.detectors.claim_gate import gate
 from app.llm import complete_json
 from app.models import Claim, DetectorResult, Evidence, SessionContext
 
@@ -78,6 +80,11 @@ Decide, using ONLY the snippets (not your own memory):
 - "contradicted": a snippet clearly states something incompatible with the claim
   (a different date, number, name, place …).
 - "unverified": the snippets don't settle it, are off-topic, or disagree with each other.
+- "not_checkable": the claim is NOT a fact about the world that a public source could state —
+  it's advice or an instruction ("sleep 0.6 s between calls"), arithmetic about the user's own
+  setup ("that's about 1,500 cities per run"), an opinion/recommendation/best-practice tip
+  ("Flask is a good fit", "it works best when the rows are sorted"), or it only makes sense
+  with the earlier conversation ("it returns a new DataFrame").
 
 Rules:
 - "quote" MUST be copied character-for-character from ONE snippet, and must be the sentence
@@ -96,7 +103,7 @@ Rules:
 - "explanation" is one short plain-English sentence for a non-expert, e.g.
   "Wikipedia says it was completed in 1889, not 1899."
 
-Return {"verdict": "supported|contradicted|unverified", "confidence": 0.0-1.0,
+Return {"verdict": "supported|contradicted|unverified|not_checkable", "confidence": 0.0-1.0,
         "evidence_index": <int or null>, "quote": "<verbatim or empty>",
         "explanation": "<one sentence>"}"""
 
@@ -110,7 +117,9 @@ class ClaimVerifier(BaseDetector):
         self,
         transport: httpx.AsyncBaseTransport | None = None,
         judge: JudgeFn | None = None,
+        gate_judge: JudgeFn | None = None,
     ) -> None:
+        self.gate_judge = gate_judge  # tests inject the Claim Gate's model
         # Both injectable so tests run offline with canned search results and judge answers.
         self.transport = transport
         self.judge: JudgeFn = judge or complete_json
@@ -119,7 +128,13 @@ class ClaimVerifier(BaseDetector):
         return http_client(transport=self.transport) if self.transport else http_client()
 
     # ------------------------------------------------------------------ main flow
-    async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult:
+    async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
+        if looks_like_instruction(claim.quote):
+            return None  # advice/instructions aren't facts a search can confirm
+        g = await gate(claim, session, self.gate_judge)
+        if not g.checkable:
+            return None  # advice / opinion / the user's own context / meta: no source can say
+        claim = g.resolved(claim)  # context-resolved, standalone text (long-chat root cause)
         query = (claim.normalized or claim.quote).strip()[:300]  # privacy: claim text only
 
         snippets = await self.cached(
@@ -262,8 +277,10 @@ class ClaimVerifier(BaseDetector):
             raise TypeError(f"judge returned {type(data).__name__}, expected an object")
         return data
 
-    def _to_result(self, data: dict[str, Any], snippets: list[Snippet]) -> DetectorResult:
+    def _to_result(self, data: dict[str, Any], snippets: list[Snippet]) -> DetectorResult | None:
         verdict = str(data.get("verdict", "unverified")).lower().strip()
+        if verdict == "not_checkable":
+            return None  # nothing to say — don't turn advice/opinions/context-talk amber
         if verdict not in ("supported", "contradicted", "unverified"):
             verdict = "unverified"
         try:
