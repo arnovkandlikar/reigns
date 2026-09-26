@@ -13,10 +13,11 @@ enum PetLanguage: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Value for session.start "language". English is the engine's default, so it's left out.
-    var wireCode: String? {
+    /// Value for session.start / session.update "language". Sent explicitly (also "en"), since
+    /// session.update ignores a missing field, so switching back to English needs "en".
+    var wireCode: String {
         switch self {
-        case .english: return nil
+        case .english: return "en"
         case .spanish: return "es"
         }
     }

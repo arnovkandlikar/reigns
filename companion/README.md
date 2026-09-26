@@ -79,11 +79,10 @@ Or open `Reigns.xcodeproj` in Xcode and press Run.
 - [x] Characters (menu › Character): **Charlie** (default horse) or **Marley** (a unicorn: golden spiral horn, pastel rainbow mane, sparkles, pearly white coat at Calm/Recovered,
       eyelashes, rosy cheeks). Shared expressions, level colours and accessories;
       Marley has her own engine voice (`"character": "charlie"|"marley"` in `session.start`); remembered across launches (`Reigns/Pet/PetCharacter.swift`).
-- [x] Language (menu › Language): English or Español. Español sends `"language": "es"` in
-      `session.start` (English sends nothing, the engine's default, so older engines still accept it);
-      switching restarts the engine session with the current chat key, so it applies at once and the
-      chat's score is restored. **Español needs an engine with Role B's Spanish support** (older engines
-      reject the unknown field with `invalid_message`).
+- [x] Language (menu › Language): English or Español, sent as `"language": "en"|"es"`. Switching
+      language or character mid-chat sends `session.update` (same session: score, history and bubble
+      stay; the engine re-sends the bubble in the new language). `session.start` carries both on
+      every (re)connect.
 
 ## AX tree findings (Day-One Test, PRD §19 Q5)
 
