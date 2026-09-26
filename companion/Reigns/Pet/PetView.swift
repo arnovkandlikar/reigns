@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// FR-A6 expressions (§10). Driven only by heat.update: `level`, plus `recovered` for 3 s after a
@@ -38,8 +39,24 @@ struct PetView: View {
     }
 
     /// Height of the visible part of the horse above the floor, in screen points.
-    static func visibleHeight(level: Int, recovered: Bool = false) -> CGFloat {
-        baseVisibleHeight(PetExpression(level: level, recovered: recovered)) * scale
+    static func visibleHeight(level: Int, recovered: Bool = false, onDock: Bool = false) -> CGFloat {
+        (onDock ? baseHorseSize.height : baseVisibleHeight(PetExpression(level: level, recovered: recovered)))
+            * scale
+    }
+
+    /// Where the eyes sit below the ear tips, in screen points.
+    static let eyeDepth: CGFloat = 36 * scale
+
+    /// Pupil offset toward the mouse pointer (base points), stronger the further away it is.
+    private static func gaze(from anchor: CGPoint?) -> CGSize {
+        guard let anchor else { return .zero }
+        let mouse = NSEvent.mouseLocation
+        let dx = mouse.x - anchor.x
+        let dy = anchor.y - mouse.y  // SwiftUI's y grows downward
+        let distance = hypot(dx, dy)
+        guard distance > 4 else { return .zero }
+        let reach = min(1, distance / 220) * 2.2
+        return CGSize(width: dx / distance * reach, height: dy / distance * reach)
     }
 
     /// How much of the horse (from its ear tips down, in base points) shows above the floor.
@@ -74,7 +91,8 @@ struct PetView: View {
         // expression changes animate with a spring (see PetPanelController).
         TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
             let motion = HorseMotion(expression: expression, time: timeline.date.timeIntervalSinceReferenceDate)
-            HorseFace(expression: expression, motion: motion, character: model.character)
+            HorseFace(expression: expression, motion: motion, character: model.character,
+                      gaze: Self.gaze(from: model.eyeAnchor))
                 .frame(width: Self.baseHorseSize.width, height: Self.baseHorseSize.height)
                 .overlay {
                     Accessories(expression: expression, unverified: model.unverifiedCount,
@@ -101,7 +119,9 @@ struct PetView: View {
                 .offset(x: motion.dx, y: motion.dy)
                 .scaleEffect(Self.scale)
                 .frame(width: Self.horseSize.width, height: Self.horseSize.height)
-                .offset(y: (Self.baseHorseSize.height - Self.baseVisibleHeight(expression)) * Self.scale)
+                .offset(y: (Self.baseHorseSize.height
+                            - (model.isOnDock ? Self.baseHorseSize.height : Self.baseVisibleHeight(expression)))
+                            * Self.scale)
                 // Switching characters: sink fully out of view, then come back as the other one.
                 .offset(y: model.isCharacterHidden ? Self.horseSize.height + 40 : 0)
                 // Rebuild the whole horse per character so nothing carries over between them.
@@ -200,6 +220,8 @@ private struct HorseFace: View {
     let expression: PetExpression
     let motion: HorseMotion
     let character: PetCharacter
+    /// Pupil offset toward the mouse.
+    var gaze: CGSize = .zero
 
     private var isMarley: Bool { character == .marley }
 
@@ -260,11 +282,11 @@ private struct HorseFace: View {
 
             HStack(spacing: 18) {
                 Eye(expression: expression, isRight: false, openness: motion.eyeOpenness, spin: motion.spiralSpin,
-                    lid: palette.coat)
+                    lid: palette.coat, gaze: gaze)
                     .frame(width: 13, height: 13)
                     .overlay(alignment: .top) { if isMarley { Lashes(isRight: false) } }
                 Eye(expression: expression, isRight: true, openness: motion.eyeOpenness, spin: motion.spiralSpin,
-                    lid: palette.coat)
+                    lid: palette.coat, gaze: gaze)
                     .frame(width: 13, height: 13)
                     .overlay(alignment: .top) { if isMarley { Lashes(isRight: true) } }
             }
@@ -461,6 +483,8 @@ private struct Eye: View {
     let spin: Angle
     /// Coat colour, for the Concerned eyelid.
     let lid: Color
+    /// Follow-the-mouse offset added to the expression's own gaze.
+    var gaze: CGSize = .zero
 
     var body: some View {
         switch expression {
@@ -507,13 +531,17 @@ private struct Eye: View {
 
     private var pupilSize: CGFloat { expression == .alarmed ? 4.5 : 7 }
 
-    /// Where the pupils look.
+    /// Where the pupils look: the expression's own gaze plus following the mouse (kept inside the eye).
     private var look: CGSize {
+        let base: CGSize
         switch expression {
-        case .curious: return CGSize(width: 1, height: -1.5)
-        case .concerned: return CGSize(width: 3, height: 1)  // side-eye
-        default: return .zero
+        case .curious: base = CGSize(width: 1, height: -1.5)
+        case .concerned: base = CGSize(width: 3, height: 1)  // side-eye
+        default: base = .zero
         }
+        let limit: CGFloat = expression == .alarmed ? 4.5 : 3
+        return CGSize(width: max(-limit, min(limit, base.width + gaze.width)),
+                      height: max(-limit, min(limit, base.height + gaze.height)))
     }
 }
 
@@ -698,10 +726,13 @@ private struct GallopingHorse: View {
                 leg(x: 14.5, angle: -28 * swing)
                 leg(x: 8, angle: -28 * swing)
                 leg(x: 6.5, angle: 28 * swing)
-                // Tail.
-                Capsule().fill(Self.ink).frame(width: 1.6, height: 6)
-                    .rotationEffect(.degrees(60 + 10 * Double(swing)), anchor: .top)
-                    .position(x: 4, y: 7)
+                // Tail: grows out of the rump and swings.
+                Path { p in
+                    p.move(to: CGPoint(x: 5, y: 7.5))
+                    p.addQuadCurve(to: CGPoint(x: 1 - swing * 0.8, y: 12 + swing * 0.8),
+                                   control: CGPoint(x: 1.5, y: 7))
+                }
+                .stroke(Self.ink, style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
                 // Body, neck, head.
                 Capsule().fill(Self.ink).frame(width: 14, height: 6.5).position(x: 11, y: 9)
                 Capsule().fill(Self.ink).frame(width: 4, height: 8)

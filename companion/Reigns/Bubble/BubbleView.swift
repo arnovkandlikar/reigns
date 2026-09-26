@@ -51,13 +51,7 @@ struct BubbleView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             if !content.problems.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(content.problems.prefix(3)) { problem in
-                        Text("• \(problem.text)")
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .font(.system(size: 12))
+                ProblemList(problems: content.problems)
             }
 
             if !content.patternText.isEmpty {
@@ -288,6 +282,32 @@ private struct ClaimRow: View {
         case "amber": return .orange
         default: return .green
         }
+    }
+}
+
+/// Every problem the engine sent (no cap). Scrolls once the list gets long so the bubble stays on screen.
+private struct ProblemList: View {
+    let problems: [BubbleProblem]
+
+    private static let scrollAfter = 5
+
+    var body: some View {
+        if problems.count > Self.scrollAfter {
+            ScrollView { rows }.frame(maxHeight: 170)
+        } else {
+            rows
+        }
+    }
+
+    private var rows: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(problems) { problem in
+                Text("• \(problem.text)")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(.system(size: 12))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

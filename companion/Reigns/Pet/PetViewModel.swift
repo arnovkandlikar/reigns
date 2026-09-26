@@ -1,3 +1,4 @@
+import CoreGraphics
 import Observation
 
 /// Pet state (PRD §14 rule 9). FR-A6: level is driven only by heat.update.level once networking lands.
@@ -16,6 +17,10 @@ final class PetViewModel {
     var isRecovered = false
     /// The engine is checking a reply Reigns just sent (shows the thinking bubble).
     var isScanning = false
+    /// Screen point (Cocoa) between the eyes, so the pupils can follow the mouse. nil = look ahead.
+    var eyeAnchor: CGPoint?
+    /// The Dock pushed the pet up: show the whole horse instead of cutting it off at the Dock.
+    var isOnDock = false
     /// heat.update.amber_count: claims the engine couldn't confirm (FR-A7 "?" badge).
     var unverifiedCount = 0
     /// Every checked claim in this conversation (merged from verdicts.update), for Details.

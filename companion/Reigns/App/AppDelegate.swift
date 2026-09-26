@@ -15,7 +15,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let voice = VoicePlayer()
     /// Last line the engine spoke in this chat, for the bubble's replay button.
     private var lastVoice: VoicePlay?
+    /// What the pet found in each chat (keyed like the engine's per-chat heat: the message_id of the
+    /// chat's first message), so flipping back restores its highlights, bubble and Replay line.
+    private struct ChatMemory {
+        var claims: [ClaimVerdict] = []
+        var bubble: BubbleContent?
+        var voice: VoicePlay?
+    }
+    private var chatMemory: [String: ChatMemory] = [:]
+    private var chatOrder: [String] = []
+    private var currentChatKey: String?
+    private static let rememberedChats = 20
     private let onboarding = OnboardingWindow()
+    private let highlightOverlay = HighlightOverlay()
+    private var highlightScanner: HighlightScanner!
+    private var highlightTimer: Timer?
+    private var highlightBusy = false
+    /// Latest frame of Claude's window (Cocoa), from the tracker.
+    private var claudeWindowFrame: CGRect?
     private var mock: MockEngine!
     /// Assistant replies sent to the engine and still waiting for verdicts (drives the thinking bubble).
     private var scanning: [String: DispatchWorkItem] = [:]
@@ -39,7 +56,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         pet = PetPanelController(inset: rules.petInsetPx)
         tracker = ClaudeWindowTracker(pollInterval: Double(rules.windowPollMs) / 1000)
-        tracker.onFrameChange = { [weak self] frame in self?.pet.claudeWindowChanged(frame) }
+        tracker.onFrameChange = { [weak self] frame in
+            self?.claudeWindowFrame = frame
+            self?.pet.claudeWindowChanged(frame)
+            self?.highlightOverlay.follow(frame)  // marks move with the window, frame by frame
+        }
         dockTracker.onChange = { [weak self] frame in self?.pet.dockChanged(frame) }
 
         engine = EngineClient(url: EngineClient.configuredURL()) { [weak self] in
@@ -47,16 +68,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         engine.onStatus = { [weak self] status in self?.state.engineStatus = status }
         engine.onHeat = { [weak self] heat in self?.pet.apply(heat) }
-        engine.onBubble = { [weak self] bubble in self?.pet.apply(bubble) }
+        engine.onBubble = { [weak self] bubble in
+            guard let self else { return }
+            self.pet.apply(bubble)
+            self.remember { $0.bubble = bubble }
+        }
         engine.onVerdicts = { [weak self] verdicts in
-            self?.pet.apply(verdicts)
-            self?.finishScan(verdicts.messageID)
+            guard let self else { return }
+            self.pet.apply(verdicts)
+            self.remember { $0.claims = self.pet.model.claims }
+            self.finishScan(verdicts.messageID)
         }
         engine.onError = { [weak self] _ in self?.clearScans() }
         engine.onBriefOffer = { [weak self] offer in self?.pet.showBriefOffer(offer) }
         pet.onBriefAccept = { [weak self] offer, mode in self?.pasteBrief(offer, mode: mode) }
         pet.onReplayVoice = { [weak self] in
-            guard let self, let line = self.lastVoice else { return }
+            guard let self, let line = self.lastVoice else {
+                Log.net.info("Replay: nothing to replay in this chat")
+                return
+            }
+            Log.net.info("Replay")
             self.voice.play(line)  // an explicit replay plays even when muted
         }
         pet.onToggleMute = { [weak self] in
@@ -67,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine.onVoice = { [weak self] line in
             self?.lastVoice = line
             self?.pet.model.hasVoiceLine = true
+            self?.remember { $0.voice = line }
             guard let self, !self.state.isVoiceMuted, !self.state.isPaused else { return }
             self.voice.play(line)
         }
@@ -75,9 +107,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pet.onFixIt = { [weak self] correction, mode in self?.fixIt(correction, mode: mode) }
         mock = MockEngine(engine: engine)
         mock.onNewChat = { [weak self] _ in
+            self?.voice.stop()
             self?.clearScans()
             self?.pet.resetForNewConversation()
             self?.lastVoice = nil
+            self?.currentChatKey = nil  // mock scenarios are throwaway chats
         }
         mock.onScanning = { [weak self] scanning in self?.pet.setScanning(scanning) }
         if MockEngine.isEnabledAtLaunch {
@@ -90,14 +124,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         watcher = ConversationWatcher(reader: ConversationReader(rules: rules.conversation))
         watcher.onMessage = { [weak self] completed in
+            // A brand-new chat is named by its first message (same as the engine does).
+            if self?.currentChatKey == nil, completed.message.position == 0 {
+                self?.currentChatKey = completed.id
+            }
             self?.engine.sendMessage(completed)
             if completed.message.role == .assistant { self?.startScan(completed.id) }
         }
         watcher.onConversationChange = { [weak self] chatKey in
+            self?.voice.stop()  // stop talking about the chat we just left
             self?.engine.startNewSession(chatKey: chatKey)
             self?.clearScans()
             self?.pet.resetForNewConversation()
             self?.lastVoice = nil
+            self?.currentChatKey = chatKey
+            self?.restoreChatMemory()
         }
 
         monitor = ClaudeAppMonitor(claudeBundleID: rules.claudeBundleID)
@@ -106,6 +147,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.apply()
         }
         monitor.start()
+        highlightScanner = HighlightScanner(rules: rules.conversation)
+        startHighlighting()
         #if DEBUG
         observeDebugNotifications()
         #endif
@@ -168,6 +211,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     #endif
+
+    // MARK: - Per-chat memory
+
+    private func remember(_ update: (inout ChatMemory) -> Void) {
+        guard let key = currentChatKey else { return }
+        var memory = chatMemory[key] ?? ChatMemory()
+        update(&memory)
+        chatMemory[key] = memory
+        chatOrder.removeAll { $0 == key }
+        chatOrder.append(key)
+        if chatOrder.count > Self.rememberedChats {
+            chatMemory.removeValue(forKey: chatOrder.removeFirst())
+        }
+    }
+
+    /// Back in a chat we've seen: its flagged claims (highlights, Details), bubble and last spoken
+    /// line come back. The engine restores the heat itself.
+    private func restoreChatMemory() {
+        guard let key = currentChatKey, let memory = chatMemory[key] else { return }
+        pet.restore(claims: memory.claims, bubble: memory.bubble)
+        lastVoice = memory.voice
+        pet.model.hasVoiceLine = memory.voice != nil
+        Log.pet.info("Restored chat: \(memory.claims.count) claims, voice line \(memory.voice != nil)")
+    }
+
+    // MARK: - On-screen highlights of flagged claims
+
+    private func startHighlighting() {
+        highlightTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshHighlights() }
+        }
+    }
+
+    /// Marks red/amber claims of the current chat on Claude's window, following scrolling.
+    private func refreshHighlights() {
+        guard state.isHighlighting, !state.isPaused, !state.isMockEngine,
+              let pid = frontmostClaude?.processIdentifier
+        else { highlightOverlay.hide(); return }
+        let targets = pet.model.claims.compactMap { claim -> HighlightTarget? in
+            switch claim.final {
+            case "red": return HighlightTarget(quote: claim.quote, severity: .red)
+            case "amber": return HighlightTarget(quote: claim.quote, severity: .amber)
+            default: return nil
+            }
+        }
+        guard !targets.isEmpty else { highlightOverlay.hide(); return }
+        guard !highlightBusy else { return }  // previous scan still running (long chat)
+        highlightBusy = true
+        let scanner = highlightScanner!
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = scanner.scan(pid: pid, targets: targets)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.highlightBusy = false
+                    // Claude may have lost focus while we scanned.
+                    guard self.frontmostClaude != nil, self.state.isHighlighting, let result else {
+                        self.highlightOverlay.hide()
+                        return
+                    }
+                    self.highlightOverlay.show(result.boxes, over: result.window, liveFrame: self.claudeWindowFrame)
+                }
+            }
+        }
+    }
 
     // MARK: - Scanning indicator (thinking bubble)
 

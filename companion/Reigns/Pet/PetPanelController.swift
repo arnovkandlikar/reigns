@@ -62,6 +62,7 @@ final class PetPanelController {
         model.bubble = bubble
         model.hasUnseenIssue = level >= 1 && !model.isBubbleOpen
         positionBubble(animated: true)
+        updateEyeAnchor()
     }
 
     /// FR-A6: the level is driven only by heat.update.level.
@@ -73,6 +74,7 @@ final class PetPanelController {
             model.isRecovered = heat.recovered
         }
         model.unverifiedCount = heat.amberCount
+        updateEyeAnchor()
         positionBubble(animated: true)
     }
 
@@ -106,6 +108,12 @@ final class PetPanelController {
             }
         }
         model.claims = claims
+    }
+
+    /// Flipped back to a chat: bring back what we found there (no "Click me!" nudge, it was seen).
+    func restore(claims: [ClaimVerdict], bubble: BubbleContent?) {
+        model.claims = claims
+        model.bubble = bubble
     }
 
     /// New conversation: back to Calm with nothing to show until the engine reports.
@@ -150,10 +158,15 @@ final class PetPanelController {
     private func floorY(in window: CGRect, petX: CGFloat) -> CGFloat {
         let screen = NSScreen.screens.first { $0.frame.intersects(window) } ?? NSScreen.main
         var floor = max(window.minY, screen?.frame.minY ?? window.minY)
+        var onDock = false
         if let dock = dockFrame,
            dock.minX < petX + size.width, dock.maxX > petX,  // overlaps the pet horizontally
            dock.maxY > floor {
             floor = dock.maxY
+            onDock = true
+        }
+        if onDock != model.isOnDock {
+            withAnimation(expressionSpring) { model.isOnDock = onDock }
         }
         return floor
     }
@@ -162,6 +175,7 @@ final class PetPanelController {
         guard let window = claudeWindow else { return }
         let frame = targetFrame(in: window)
         positionBubble(animated: animated)
+        updateEyeAnchor(petFrame: frame)
         guard frame != panel.frame else { return }
         if animated {
             NSAnimationContext.runAnimationGroup { context in
@@ -172,6 +186,14 @@ final class PetPanelController {
         } else {
             panel.setFrame(frame, display: true)
         }
+    }
+
+    /// Screen point between the eyes (they follow the mouse from there).
+    private func updateEyeAnchor(petFrame: NSRect? = nil) {
+        guard let frame = petFrame ?? claudeWindow.map(targetFrame(in:)) else { return }
+        let top = frame.minY + PetView.visibleHeight(level: model.level, recovered: model.isRecovered,
+                                                     onDock: model.isOnDock)
+        model.eyeAnchor = CGPoint(x: frame.midX, y: top - PetView.eyeDepth)
     }
 
     private func snapToNearestSide(from center: CGPoint) {
@@ -283,7 +305,8 @@ final class PetPanelController {
         guard model.isBubbleOpen, let window = claudeWindow else { return }
         let pet = targetFrame(in: window)
         let x = PetSide.saved == .right ? pet.maxX - BubbleView.width : pet.minX
-        let y = pet.minY + PetView.visibleHeight(level: model.level, recovered: model.isRecovered)
+        let y = pet.minY + PetView.visibleHeight(level: model.level, recovered: model.isRecovered,
+                                                 onDock: model.isOnDock)
             + PetView.accessoryClearance(level: model.level, recovered: model.isRecovered,
                                          scanning: model.isScanning) + 4
         bubblePanel.place(bottomLeft: CGPoint(x: x, y: y), animated: animated)

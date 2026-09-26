@@ -29,6 +29,7 @@ struct ReignsApp: App {
                 }
             }
             Text("Engine: \(state.engineStatus.rawValue)")
+            Toggle("Highlight Problems", isOn: $state.isHighlighting)
             Toggle("Mute Voice", isOn: $state.isVoiceMuted)
                 .onChange(of: state.isVoiceMuted) { _, muted in
                     if muted { appDelegate.stopVoice() }
@@ -66,6 +67,10 @@ final class AppState {
     /// FR-A11: replaying fixtures instead of the engine.
     var isMockEngine = false
     var character = PetCharacter.saved
+    /// Mark hallucinated text on Claude's window.
+    var isHighlighting = UserDefaults.standard.object(forKey: "highlightProblems") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(isHighlighting, forKey: "highlightProblems") }
+    }
     var language = PetLanguage.saved
     var isVoiceMuted = UserDefaults.standard.bool(forKey: "voiceMuted") {
         didSet { UserDefaults.standard.set(isVoiceMuted, forKey: "voiceMuted") }

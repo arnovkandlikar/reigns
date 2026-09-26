@@ -88,6 +88,18 @@ Or open `Reigns.xcodeproj` in Xcode and press Run.
       box with the Fix it flow (Replace / Add to it, clipboard restored, never presses Enter; no
       `correction.inserted`). A warning (level ≥ 2) replaces it; heat and animation are unchanged.
       Debug: Preview Level › Context Refresh Offer.
+- [x] On-screen highlights (menu › Highlight Problems, on by default): red/amber claims of the current
+      chat are marked on Claude's window by a click-through overlay (red fill + solid underline = likely
+      wrong, orange + dashed = couldn't confirm). Exact text via AXBoundsForRange, one box per line,
+      refreshed ~3×/s so it follows scrolling (`Reigns/AX/HighlightScanner.swift`, `Reigns/Pet/HighlightOverlay.swift`).
+- [x] The pet's eyes follow the mouse pointer.
+- [x] When the Dock lifts the pet, the whole horse shows (no cut-off edge above the Dock).
+- [x] Switching chats (or to the Code tab) stops any voice line about the previous chat.
+- [x] Per-chat memory: each chat's flagged claims (highlights, Details), bubble and last spoken line
+      come back when you return to it (Replay works after switching back). Last 20 chats.
+- [x] Window tracking follows a dragged/resized Claude window once per screen refresh (display link,
+      120 Hz on ProMotion); the pet and highlight overlay move with it frame by frame.
+- [x] The bubble shows every problem the engine sends (scrolls past 5).
 
 ## AX tree findings (Day-One Test, PRD §19 Q5)
 
