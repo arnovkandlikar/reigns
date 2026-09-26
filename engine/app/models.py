@@ -255,6 +255,8 @@ class CorrectionRecord(BaseModel):
     inserted: bool = False
     fixed: Optional[bool] = None
     variant_id: Optional[str] = None  # Role D's bandit variant, if any
+    target_claim_ids: list[str] = Field(default_factory=list)  # FR-D5: what this fix targets
+    fix_reason: Optional[str] = None  # why it was judged fixed / not fixed
 
 
 class SessionContext(BaseModel):
@@ -274,6 +276,7 @@ class SessionContext(BaseModel):
     verdicts: dict[str, ClaimVerdict] = Field(default_factory=dict)  # claim_id → verdict
     corrections: list[CorrectionRecord] = Field(default_factory=list)
     disagreed_claim_ids: set[str] = Field(default_factory=set)
+    resolved_claim_ids: set[str] = Field(default_factory=set)  # fixed by a verified correction
     heat: int = 0
     level: int = 0
     cache: dict[str, Any] = Field(default_factory=dict)
@@ -293,5 +296,6 @@ class SessionContext(BaseModel):
         return [c for c in self.claims.values() if c.message_id == message_id]
 
     def active_verdicts(self) -> list[ClaimVerdict]:
-        """All verdicts except ones the user disagreed with."""
-        return [v for k, v in self.verdicts.items() if k not in self.disagreed_claim_ids]
+        """All verdicts except ones the user disagreed with or a verified fix resolved."""
+        hidden = self.disagreed_claim_ids | self.resolved_claim_ids
+        return [v for k, v in self.verdicts.items() if k not in hidden]

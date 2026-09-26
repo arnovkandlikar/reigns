@@ -84,7 +84,9 @@ def test_debug_scenario_and_detector_crash_is_contained(client):
     assert sorted(c["final"] for c in first_verdicts["payload"]["claims"]).count("red") == 3
     # second reply is clean + follows an inserted correction → verified fix → recovered
     heats = [o["payload"] for o in res["outputs"] if o["type"] == "heat.update"]
-    assert heats[-1]["recovered"] is True and heats[-1]["heat"] == 45
+    # FR-D5: the 3 fixed papers are resolved (no longer count) and the fix gives −20 → calm
+    assert heats[-1]["recovered"] is True and heats[-1]["heat"] == 0
+    assert heats[-1]["red_count"] == 0 and heats[-1]["amber_count"] == 0
 
     r = client.post("/debug/message?session_id=t1", json={
         "message_id": "m1", "role": "assistant", "position": 0,

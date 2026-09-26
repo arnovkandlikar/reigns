@@ -88,6 +88,12 @@ class HeatState:
             self._set(self.heat - pts)
         return bool(pts)
 
+    def resolve(self, claim_ids: list[str], now: float) -> None:
+        """A verified fix resolved these claims: their contribution no longer counts (FR-D5).
+        Applied together with verified_fix()'s −20."""
+        for cid in claim_ids:
+            self.disagree(cid, now)
+
     # --- reads ------------------------------------------------------------------------------
     def target_level(self, now: float) -> int:
         """Level implied by current heat, ignoring hysteresis (used for bubble content)."""
