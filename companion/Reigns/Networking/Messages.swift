@@ -193,8 +193,7 @@ struct SessionStartPayload: Encodable {
     /// message_id of the chat's first message (position 0), so the engine can restore that chat's
     /// heat when the user flips back to it. Left out of the JSON when unknown.
     var chatKey: String?
-    /// Language the pet speaks: "es" for Spanish. Left out (nil) for English, the engine's default,
-    /// so engines without this field still accept session.start.
+    /// Language the pet speaks: "en" or "es".
     var language: String?
     /// Which pet is on screen, for its voice and personality: "charlie" or "marley".
     var character: String?
@@ -207,6 +206,13 @@ struct SessionStartPayload: Encodable {
         case language
         case character
     }
+}
+
+/// session.update payload (shared/schemas/session_update.json): switch language / pet mid-chat.
+/// Same session, so the score, history and bubble carry over. Missing fields are left unchanged.
+struct SessionUpdatePayload: Encodable {
+    var language: String?
+    var character: String?
 }
 
 struct MessageNewPayload: Encodable {

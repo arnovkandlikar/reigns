@@ -61,18 +61,25 @@ final class EngineClient: NSObject {
         connect()
     }
 
-    /// New language takes effect straight away: a fresh session for the same chat, so its score is
-    /// restored through the chat key.
+    /// Live language switch (session.update): same session, so the score, history and bubble stay;
+    /// the engine re-sends the bubble in the new language. If offline, the next session.start
+    /// carries it instead.
     func setLanguage(_ language: PetLanguage) {
         self.language = language.wireCode
-        startNewSession(chatKey: chatKey)
+        sendLive(SessionUpdatePayload(language: language.wireCode))
     }
 
-    /// New character's voice takes effect straight away: a fresh session for the same chat, so its
-    /// score is restored through the chat key.
+    /// Live pet switch (session.update): her own voice and personality, same score and history.
     func setCharacter(_ character: PetCharacter) {
         self.character = character.wireCode
-        startNewSession(chatKey: chatKey)
+        sendLive(SessionUpdatePayload(character: character.wireCode))
+    }
+
+    /// session.update only makes sense on the live session; queued, it would duplicate what the next
+    /// session.start already says.
+    private func sendLive(_ update: SessionUpdatePayload) {
+        guard status == .connected else { return }
+        send("session.update", update)
     }
 
     /// Disconnects and stops reconnecting (mock mode takes over).
