@@ -102,7 +102,12 @@ final class ConversationWatcher: @unchecked Sendable {
             // stays empty (someone about to type their first question) counts as a new chat.
             let since = emptySince ?? now
             emptySince = since
-            if now.timeIntervalSince(since) >= Self.stableAfter { sawEmptyChat = true }
+            if now.timeIntervalSince(since) >= Self.stableAfter, !sawEmptyChat {
+                sawEmptyChat = true
+                // New chat: fresh engine session and a calm horse (heat 0) right away, instead of
+                // carrying the previous chat's panic score until the first message is sent.
+                if hasSeenConversation { notifyConversationChange(chatKey: nil) }
+            }
             return
         }
         emptySince = nil
@@ -115,12 +120,13 @@ final class ConversationWatcher: @unchecked Sendable {
             resetConversation()
             hasSeenConversation = true
             title = snapshot.title
-            let chatKey = Self.chatKey(messages)
-            // First chat seen after launch: also restart the session if we know which chat it is,
-            // so its saved heat comes back.
-            if wasSwitch || chatKey != nil { notifyConversationChange(chatKey: chatKey) }
             // A genuinely new chat stayed empty for a while and starts at message 0.
             let isNewChat = sawEmptyChat && messages.contains { $0.position == 0 }
+            let chatKey = Self.chatKey(messages)
+            // Existing chat: restart the session with its key so its saved heat comes back (also for
+            // the first chat seen after launch). A new chat already got a fresh session when it showed
+            // up empty; sending its key now could restore an older chat that began with the same words.
+            if !isNewChat && (wasSwitch || chatKey != nil) { notifyConversationChange(chatKey: chatKey) }
             sawEmptyChat = false
             if !isNewChat {
                 seedAsHistory(messages, now: now)
