@@ -74,7 +74,9 @@ def test_ws_fake_citation_flow(client, load_scenario):
         assert finals == ["green", "red", "red", "red"]
         assert types[1]["payload"]["heat"] == 75
         bubble = types[2]["payload"]
-        assert bubble["level"] == 3 and bubble["correction"]["prompt_type"] == "diagnostic_reset"
+        # Bubble level/prompt are Course Correct's call (Role D, FR-D4, #46): lookup absence alone
+        # gets a cautious verify nudge. The engine only guarantees a bubble with a correction.
+        assert bubble["level"] >= 1 and bubble["problems"] and bubble["correction"]
 
 
 def test_debug_scenario_and_detector_crash_is_contained(client):
