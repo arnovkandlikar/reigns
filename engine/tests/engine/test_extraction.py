@@ -114,3 +114,18 @@ async def test_prose_about_the_code_is_not_double_counted(monkeypatch, load_scen
     monkeypatch.setattr(extraction, "complete_json", fake_json)
     claims = await extract_claims(session_with(text), "a", text)
     assert [c.type for c in claims] == ["code_api"]
+
+
+def _c(quote, ctype="fact"):
+    from app.models import Claim
+    return Claim(claim_id="x", message_id="m", quote=quote, normalized=quote, type=ctype,
+                 risk="high")
+
+
+def test_fragments_are_dropped_but_short_facts_with_numbers_kept():
+    assert extraction.is_fragment(_c("for the World's Fair"))
+    assert not extraction.is_fragment(_c("completed in 1899", "number"))
+    assert not extraction.is_fragment(_c("The Eiffel Tower is in Paris, France."))
+    assert not extraction.is_fragment(_c("Vaswani et al.", "paper"))
+    assert not extraction.is_fragment(_c("Sydney is the capital."))  # short but a real claim
+    assert extraction.is_fragment(_c("in Paris"))

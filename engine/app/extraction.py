@@ -35,6 +35,22 @@ HEDGE = re.compile(
 )
 
 
+_REF_TYPES = ("paper", "url", "package", "code_api")
+_VERB = re.compile(
+    r"\b(is|are|was|were|be|been|has|have|had|will|won|did|does|do|can|could|made|built|"
+    r"invented|founded|wrote|discovered|died|born)\b", re.I)
+
+
+def is_fragment(claim: Claim) -> bool:
+    """A tiny piece of a sentence with no number (e.g. "for the World's Fair"). Checking it on
+    its own only produces "couldn't verify" ambers, so it is dropped."""
+    if claim.type in _REF_TYPES or re.search(r"\d", claim.quote):
+        return False
+    if _VERB.search(claim.quote):  # "Sydney is the capital." is short but a real claim
+        return False
+    return len(claim.quote.split()) < 5
+
+
 def is_hedge(quote: str) -> bool:
     return bool(HEDGE.match(quote.strip()))
 
@@ -56,6 +72,8 @@ Return a JSON array (max 12 items). Each item:
  "scope": "public|private"}
 Rules:
 - quote MUST be copied character-for-character from the reply.
+- Each quote is a whole clause that states the claim (subject + what is claimed). Never split
+  off fragments or background details ("for the World's Fair", "in Paris") as extra claims.
 - Each cited paper, URL and software package is its own claim (type paper/url/package).
 - risk high = specific numbers, dates, names, citations, package names; low = general
   explanations, opinions, advice. Skip greetings and filler entirely.
@@ -298,7 +316,7 @@ async def extract_claims(
     if not prose_claims:
         prose_claims = _heuristic_claims(text, message_id, context)
 
-    prose_claims = [c for c in prose_claims if not is_hedge(c.quote)]
+    prose_claims = [c for c in prose_claims if not is_hedge(c.quote) and not is_fragment(c)]
     idents = set().union(*(code_identifiers(c.code or "") for c in claims)) if claims else set()
     if idents:  # don't double-count what the Code API Checker already checks
         prose_claims = [c for c in prose_claims if not describes_code(c.quote, idents)]
