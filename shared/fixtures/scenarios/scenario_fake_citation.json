@@ -1,0 +1,457 @@
+{
+  "scenario": "fake_citation",
+  "description": "Assistant invents 3 papers (1 real). Pet goes Alarmed; Fix it inserts a diagnostic reset; next reply is clean \u2192 Recovered.",
+  "demo_step": 1,
+  "companion_to_engine": [
+    {
+      "type": "session.start",
+      "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "app": "claude",
+        "app_version": "unknown",
+        "companion_version": "1.0"
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "54638a2e2cad08d1ddaa2ebe74b9e35d45f2b9b8",
+        "role": "user",
+        "text": "Can you list some research papers on using transformers to predict honeybee colony collapse? Include authors and years.",
+        "position": 0
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "e005a8637071e5a34da426b73f432a5b34e20752",
+        "role": "assistant",
+        "text": "Here are some relevant papers:\n\n1. Lee & Park (2022), \"Transformer Models for Honeybee Colony Collapse Forecasting\", IEEE Access.\n2. Moreau, Tanaka & Silva (2021), \"HiveFormer: Attention-Based Acoustic Monitoring of Beehives\", Nature Machine Intelligence.\n3. Okafor et al. (2023), \"Predicting Colony Collapse Disorder with Temporal Fusion Transformers\", Computers and Electronics in Agriculture.\n4. Vaswani et al. (2017), \"Attention Is All You Need\", NeurIPS \u2014 the original transformer paper these build on.",
+        "position": 1
+      }
+    },
+    {
+      "type": "correction.inserted",
+      "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "correction_id": "88d02062-bbb6-5d64-91b1-81dc8a6032cc"
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "0eaf0f915c14c7d3ca3025a8e5d19f2a94f23df5",
+        "role": "assistant",
+        "text": "You're right to check \u2014 I'm not confident those first three papers exist, and I shouldn't have listed them. I don't know of peer-reviewed work that applies transformers specifically to colony collapse prediction. The foundational paper is Vaswani et al. (2017), \"Attention Is All You Need\" [verified].",
+        "position": 2
+      }
+    }
+  ],
+  "expected": {
+    "claims": [
+      {
+        "claim_id": "f952c0c2-5c2e-5e2d-8629-3ef5b93bb868",
+        "message_id": "e005a8637071e5a34da426b73f432a5b34e20752",
+        "quote": "Lee & Park (2022), \"Transformer Models for Honeybee Colony Collapse Forecasting\"",
+        "normalized": "The paper 'Transformer Models for Honeybee Colony Collapse Forecasting' exists.",
+        "type": "paper",
+        "risk": "high",
+        "question": null,
+        "context": "Can you list some research papers on using transformers to predict honeybee colony collapse? Include authors and years.",
+        "source_ref": null,
+        "code": null
+      },
+      {
+        "claim_id": "b4f68e73-5880-5ccf-9b62-3190c5834686",
+        "message_id": "e005a8637071e5a34da426b73f432a5b34e20752",
+        "quote": "Moreau, Tanaka & Silva (2021), \"HiveFormer: Attention-Based Acoustic Monitoring of Beehives\"",
+        "normalized": "The paper 'HiveFormer: Attention-Based Acoustic Monitoring of Beehives' exists.",
+        "type": "paper",
+        "risk": "high",
+        "question": null,
+        "context": "Can you list some research papers on using transformers to predict honeybee colony collapse? Include authors and years.",
+        "source_ref": null,
+        "code": null
+      },
+      {
+        "claim_id": "9cb46d50-7124-5627-888d-b45c6039953e",
+        "message_id": "e005a8637071e5a34da426b73f432a5b34e20752",
+        "quote": "Okafor et al. (2023), \"Predicting Colony Collapse Disorder with Temporal Fusion Transformers\"",
+        "normalized": "The paper 'Predicting Colony Collapse Disorder with Temporal Fusion Transformers' exists.",
+        "type": "paper",
+        "risk": "high",
+        "question": null,
+        "context": "Can you list some research papers on using transformers to predict honeybee colony collapse? Include authors and years.",
+        "source_ref": null,
+        "code": null
+      },
+      {
+        "claim_id": "b943f00b-e7bc-5961-a7ff-acfa45649285",
+        "message_id": "e005a8637071e5a34da426b73f432a5b34e20752",
+        "quote": "Vaswani et al. (2017), \"Attention Is All You Need\"",
+        "normalized": "The paper 'Attention Is All You Need' by Vaswani et al. (2017) exists.",
+        "type": "paper",
+        "risk": "high",
+        "question": null,
+        "context": "Can you list some research papers on using transformers to predict honeybee colony collapse? Include authors and years.",
+        "source_ref": null,
+        "code": null
+      },
+      {
+        "claim_id": "2854a7bf-c6b0-505a-8bb1-758b480d1d41",
+        "message_id": "0eaf0f915c14c7d3ca3025a8e5d19f2a94f23df5",
+        "quote": "Vaswani et al. (2017), \"Attention Is All You Need\"",
+        "normalized": "The paper 'Attention Is All You Need' by Vaswani et al. (2017) exists.",
+        "type": "paper",
+        "risk": "high",
+        "question": null,
+        "context": "Can you list some research papers on using transformers to predict honeybee colony collapse? Include authors and years.",
+        "source_ref": null,
+        "code": null
+      }
+    ],
+    "detector_results": {
+      "f952c0c2-5c2e-5e2d-8629-3ef5b93bb868": [
+        {
+          "detector": "reference_auditor",
+          "status": "contradicted",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "source": "Crossref",
+              "url": "https://api.crossref.org/works?query.bibliographic=Transformer+Models+for+Honeybee+Colony+Collapse+Forecasting",
+              "snippet": "No matching work found"
+            },
+            {
+              "source": "Semantic Scholar",
+              "url": null,
+              "snippet": "No paper with a similar title (best match 0.41)"
+            }
+          ],
+          "explanation": "No paper titled \"Transformer Models for Honeybee Colony Collapse Forecasting\" exists in Crossref or Semantic Scholar.",
+          "latency_ms": 1500
+        }
+      ],
+      "b4f68e73-5880-5ccf-9b62-3190c5834686": [
+        {
+          "detector": "reference_auditor",
+          "status": "contradicted",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "source": "Crossref",
+              "url": "https://api.crossref.org/works?query.bibliographic=HiveFormer:+Attention-Based+Acoustic+Monitoring+of+Beehives",
+              "snippet": "No matching work found"
+            },
+            {
+              "source": "Semantic Scholar",
+              "url": null,
+              "snippet": "No paper with a similar title (best match 0.41)"
+            }
+          ],
+          "explanation": "No paper titled \"HiveFormer: Attention-Based Acoustic Monitoring of Beehives\" exists in Crossref or Semantic Scholar.",
+          "latency_ms": 1500
+        }
+      ],
+      "9cb46d50-7124-5627-888d-b45c6039953e": [
+        {
+          "detector": "reference_auditor",
+          "status": "contradicted",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "source": "Crossref",
+              "url": "https://api.crossref.org/works?query.bibliographic=Predicting+Colony+Collapse+Disorder+with+Temporal+Fusion+Transformers",
+              "snippet": "No matching work found"
+            },
+            {
+              "source": "Semantic Scholar",
+              "url": null,
+              "snippet": "No paper with a similar title (best match 0.41)"
+            }
+          ],
+          "explanation": "No paper titled \"Predicting Colony Collapse Disorder with Temporal Fusion Transformers\" exists in Crossref or Semantic Scholar.",
+          "latency_ms": 1500
+        }
+      ],
+      "b943f00b-e7bc-5961-a7ff-acfa45649285": [
+        {
+          "detector": "reference_auditor",
+          "status": "supported",
+          "confidence": 0.98,
+          "evidence": [
+            {
+              "source": "Crossref",
+              "url": "https://doi.org/10.48550/arXiv.1706.03762",
+              "snippet": "Attention Is All You Need \u2014 Vaswani, A.; Shazeer, N.; \u2026 (2017)"
+            }
+          ],
+          "explanation": "Found in Crossref with matching title, authors and year.",
+          "latency_ms": 1500
+        }
+      ],
+      "2854a7bf-c6b0-505a-8bb1-758b480d1d41": [
+        {
+          "detector": "reference_auditor",
+          "status": "supported",
+          "confidence": 0.98,
+          "evidence": [
+            {
+              "source": "Crossref",
+              "url": "https://doi.org/10.48550/arXiv.1706.03762",
+              "snippet": "Attention Is All You Need \u2014 Vaswani, A.; \u2026 (2017)"
+            }
+          ],
+          "explanation": "Found in Crossref with matching title, authors and year.",
+          "latency_ms": 1500
+        }
+      ]
+    },
+    "engine_to_companion": [
+      {
+        "type": "heat.update",
+        "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "heat": 0,
+          "level": 0,
+          "recovered": false,
+          "red_count": 0,
+          "amber_count": 0
+        }
+      },
+      {
+        "type": "verdicts.update",
+        "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "message_id": "e005a8637071e5a34da426b73f432a5b34e20752",
+          "claims": [
+            {
+              "claim_id": "f952c0c2-5c2e-5e2d-8629-3ef5b93bb868",
+              "quote": "Lee & Park (2022), \"Transformer Models for Honeybee Colony Collapse Forecasting\"",
+              "type": "paper",
+              "risk": "high",
+              "final": "red",
+              "detector_results": [
+                {
+                  "detector": "reference_auditor",
+                  "status": "contradicted",
+                  "confidence": 0.95,
+                  "evidence": [
+                    {
+                      "source": "Crossref",
+                      "url": "https://api.crossref.org/works?query.bibliographic=Transformer+Models+for+Honeybee+Colony+Collapse+Forecasting",
+                      "snippet": "No matching work found"
+                    },
+                    {
+                      "source": "Semantic Scholar",
+                      "url": null,
+                      "snippet": "No paper with a similar title (best match 0.41)"
+                    }
+                  ],
+                  "explanation": "No paper titled \"Transformer Models for Honeybee Colony Collapse Forecasting\" exists in Crossref or Semantic Scholar.",
+                  "latency_ms": 1500
+                }
+              ]
+            },
+            {
+              "claim_id": "b4f68e73-5880-5ccf-9b62-3190c5834686",
+              "quote": "Moreau, Tanaka & Silva (2021), \"HiveFormer: Attention-Based Acoustic Monitoring of Beehives\"",
+              "type": "paper",
+              "risk": "high",
+              "final": "red",
+              "detector_results": [
+                {
+                  "detector": "reference_auditor",
+                  "status": "contradicted",
+                  "confidence": 0.95,
+                  "evidence": [
+                    {
+                      "source": "Crossref",
+                      "url": "https://api.crossref.org/works?query.bibliographic=HiveFormer:+Attention-Based+Acoustic+Monitoring+of+Beehives",
+                      "snippet": "No matching work found"
+                    },
+                    {
+                      "source": "Semantic Scholar",
+                      "url": null,
+                      "snippet": "No paper with a similar title (best match 0.41)"
+                    }
+                  ],
+                  "explanation": "No paper titled \"HiveFormer: Attention-Based Acoustic Monitoring of Beehives\" exists in Crossref or Semantic Scholar.",
+                  "latency_ms": 1500
+                }
+              ]
+            },
+            {
+              "claim_id": "9cb46d50-7124-5627-888d-b45c6039953e",
+              "quote": "Okafor et al. (2023), \"Predicting Colony Collapse Disorder with Temporal Fusion Transformers\"",
+              "type": "paper",
+              "risk": "high",
+              "final": "red",
+              "detector_results": [
+                {
+                  "detector": "reference_auditor",
+                  "status": "contradicted",
+                  "confidence": 0.95,
+                  "evidence": [
+                    {
+                      "source": "Crossref",
+                      "url": "https://api.crossref.org/works?query.bibliographic=Predicting+Colony+Collapse+Disorder+with+Temporal+Fusion+Transformers",
+                      "snippet": "No matching work found"
+                    },
+                    {
+                      "source": "Semantic Scholar",
+                      "url": null,
+                      "snippet": "No paper with a similar title (best match 0.41)"
+                    }
+                  ],
+                  "explanation": "No paper titled \"Predicting Colony Collapse Disorder with Temporal Fusion Transformers\" exists in Crossref or Semantic Scholar.",
+                  "latency_ms": 1500
+                }
+              ]
+            },
+            {
+              "claim_id": "b943f00b-e7bc-5961-a7ff-acfa45649285",
+              "quote": "Vaswani et al. (2017), \"Attention Is All You Need\"",
+              "type": "paper",
+              "risk": "high",
+              "final": "green",
+              "detector_results": [
+                {
+                  "detector": "reference_auditor",
+                  "status": "supported",
+                  "confidence": 0.98,
+                  "evidence": [
+                    {
+                      "source": "Crossref",
+                      "url": "https://doi.org/10.48550/arXiv.1706.03762",
+                      "snippet": "Attention Is All You Need \u2014 Vaswani, A.; Shazeer, N.; \u2026 (2017)"
+                    }
+                  ],
+                  "explanation": "Found in Crossref with matching title, authors and year.",
+                  "latency_ms": 1500
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "type": "heat.update",
+        "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "heat": 75,
+          "level": 3,
+          "recovered": false,
+          "red_count": 3,
+          "amber_count": 0
+        }
+      },
+      {
+        "type": "bubble.content",
+        "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "level": 3,
+          "headline": "Heads up: Claude is making up sources.",
+          "problems": [
+            {
+              "claim_id": "f952c0c2-5c2e-5e2d-8629-3ef5b93bb868",
+              "text": "The paper \"Lee & Park, 2022\" doesn't exist.",
+              "evidence_url": "https://api.crossref.org/works?query.bibliographic=Transformer+Models+for+Honeybee+Colony+Collapse+Forecasting"
+            },
+            {
+              "claim_id": "b4f68e73-5880-5ccf-9b62-3190c5834686",
+              "text": "\"HiveFormer\" (Moreau et al., 2021) doesn't exist.",
+              "evidence_url": null
+            },
+            {
+              "claim_id": "9cb46d50-7124-5627-888d-b45c6039953e",
+              "text": "\"Okafor et al., 2023\" doesn't exist.",
+              "evidence_url": null
+            }
+          ],
+          "pattern_text": "It's filling gaps with confident guesses instead of saying it doesn't know.",
+          "confidence_label": "Very sure",
+          "confidence_reason": "Checked Crossref and Semantic Scholar.",
+          "action_text": "I wrote a prompt to fix this.",
+          "correction": {
+            "correction_id": "88d02062-bbb6-5d64-91b1-81dc8a6032cc",
+            "prompt_type": "diagnostic_reset",
+            "text": "I want to pause and fix a few problems before we continue.\n\n1. You cited \"Lee & Park (2022)\", \"Moreau, Tanaka & Silva (2021)\" and \"Okafor et al. (2023)\"; none of these exist in Crossref or Semantic Scholar.\n\nPlease list only papers you're confident exist, and say so if you can't find any on this exact topic. Mark each one [verified] or [unverified]. It's fine to say you don't know."
+          }
+        }
+      },
+      {
+        "type": "verdicts.update",
+        "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "message_id": "0eaf0f915c14c7d3ca3025a8e5d19f2a94f23df5",
+          "claims": [
+            {
+              "claim_id": "2854a7bf-c6b0-505a-8bb1-758b480d1d41",
+              "quote": "Vaswani et al. (2017), \"Attention Is All You Need\"",
+              "type": "paper",
+              "risk": "high",
+              "final": "green",
+              "detector_results": [
+                {
+                  "detector": "reference_auditor",
+                  "status": "supported",
+                  "confidence": 0.98,
+                  "evidence": [
+                    {
+                      "source": "Crossref",
+                      "url": "https://doi.org/10.48550/arXiv.1706.03762",
+                      "snippet": "Attention Is All You Need \u2014 Vaswani, A.; \u2026 (2017)"
+                    }
+                  ],
+                  "explanation": "Found in Crossref with matching title, authors and year.",
+                  "latency_ms": 1500
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "type": "heat.update",
+        "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "heat": 45,
+          "level": 2,
+          "recovered": true,
+          "red_count": 0,
+          "amber_count": 0
+        }
+      },
+      {
+        "type": "bubble.content",
+        "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "level": 2,
+          "headline": "Fixed it! Claude corrected itself.",
+          "problems": [],
+          "pattern_text": "",
+          "confidence_label": "",
+          "confidence_reason": "",
+          "action_text": "",
+          "correction": null
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "$id": "reigns/drift_profile.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "\u00a712.5 \u2014 Role D's diagnose() returns this.",
+  "properties": {
+    "blast_radius": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Blast Radius",
+      "type": "array"
+    },
+    "failures": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Failures",
+      "type": "array"
+    },
+    "root_causes": {
+      "items": {
+        "enum": [
+          "knowledge_gap",
+          "anchored_wrong_assumption",
+          "caving",
+          "fabricated_sources",
+          "outdated_knowledge",
+          "source_drift",
+          "api_confusion"
+        ],
+        "type": "string"
+      },
+      "title": "Root Causes",
+      "type": "array"
+    },
+    "trend": {
+      "default": "isolated",
+      "enum": [
+        "isolated",
+        "worsening"
+      ],
+      "title": "Trend",
+      "type": "string"
+    }
+  },
+  "title": "DriftProfile",
+  "type": "object"
+}

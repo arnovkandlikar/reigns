@@ -1,0 +1,16 @@
+# Normalize line endings so Windows/Mac/Linux teammates never produce
+# whole-file "every line changed" diffs (the #1 cause of silly merge conflicts).
+* text=auto eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.mp3 binary
+*.pdf binary
+*.pptx binary
+*.mov binary
+*.mp4 binary
+
+# Cross-role request log: everyone appends, so let git keep both sides
+# automatically instead of raising a conflict.
+docs/requests.md merge=union

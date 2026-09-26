@@ -1,0 +1,31 @@
+# PRD §6 ownership. Replace @role-x with each teammate's GitHub username.
+# With branch protection "Require review from Code Owners", a PR touching
+# someone else's folder needs their approval.
+
+# Default: Role B (engine / repo steward)
+*                                           @role-b
+
+# Role A — Companion (Swift)
+/companion/                                 @role-a
+
+# Role B — Engine
+/engine/                                    @role-b
+/shared/                                    @role-b
+/engine/app/detectors/pushback.py           @role-b
+
+# Role C — Detectors
+/engine/app/detectors/                      @role-c
+/engine/app/detectors/pushback.py           @role-b
+/engine/app/learning/memory.py              @role-c
+/engine/tests/detectors/                    @role-c
+
+# Role D — Course Correct, eval, pitch
+/engine/app/course_correct/                 @role-d
+/engine/app/detectors/source_faithfulness.py @role-d
+/engine/app/learning/calibration.py         @role-d
+/eval/                                      @role-d
+/pitch/                                     @role-d
+
+# Shared docs — anyone
+/docs/requests.md                           @role-a @role-b @role-c @role-d
+/PRD.md                                     @role-a @role-b @role-c @role-d

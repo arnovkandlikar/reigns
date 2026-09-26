@@ -1,0 +1,37 @@
+{
+  "$id": "reigns/message_new.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Payload of the 'message.new' WebSocket message (PRD \u00a712).",
+  "properties": {
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "position": {
+      "minimum": 0,
+      "title": "Position",
+      "type": "integer"
+    },
+    "role": {
+      "enum": [
+        "assistant",
+        "user"
+      ],
+      "title": "Role",
+      "type": "string"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id",
+    "role",
+    "text",
+    "position"
+  ],
+  "title": "MessageNew",
+  "type": "object"
+}

@@ -1,0 +1,173 @@
+{
+  "scenario": "niche_entropy",
+  "description": "Niche fact: no evidence found, and 5 resampled answers all disagree (high semantic entropy) \u2192 red.",
+  "demo_step": null,
+  "companion_to_engine": [
+    {
+      "type": "session.start",
+      "session_id": "4a8b8d0d-40c9-54f2-a3f6-ff2ea2c02354",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "app": "claude",
+        "app_version": "unknown",
+        "companion_version": "1.0"
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "4a8b8d0d-40c9-54f2-a3f6-ff2ea2c02354",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "650fd18f7f4bf5bbd95996a829c3fa2a61117836",
+        "role": "user",
+        "text": "Who was the first mayor of T\u00f3rshavn, and what year did they take office?",
+        "position": 0
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "4a8b8d0d-40c9-54f2-a3f6-ff2ea2c02354",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "4e1313ab38df07e25f9cc94631ffaa96dcd895c7",
+        "role": "assistant",
+        "text": "The first mayor of T\u00f3rshavn was J\u00f3gvan Poulsen, who took office in 1866.",
+        "position": 1
+      }
+    }
+  ],
+  "expected": {
+    "claims": [
+      {
+        "claim_id": "34fa8b48-ab9b-5d1f-8ed7-0e3bdf755dfe",
+        "message_id": "4e1313ab38df07e25f9cc94631ffaa96dcd895c7",
+        "quote": "The first mayor of T\u00f3rshavn was J\u00f3gvan Poulsen, who took office in 1866.",
+        "normalized": "The first mayor of T\u00f3rshavn was J\u00f3gvan Poulsen, who took office in 1866.",
+        "type": "fact",
+        "risk": "high",
+        "question": "Who was the first mayor of T\u00f3rshavn?",
+        "context": "Who was the first mayor of T\u00f3rshavn, and what year did they take office?",
+        "source_ref": null,
+        "code": null
+      }
+    ],
+    "detector_results": {
+      "34fa8b48-ab9b-5d1f-8ed7-0e3bdf755dfe": [
+        {
+          "detector": "claim_verifier",
+          "status": "unverified",
+          "confidence": 0.5,
+          "evidence": [],
+          "explanation": "No sources found that confirm or deny this.",
+          "latency_ms": 3100
+        },
+        {
+          "detector": "consistency_probe",
+          "status": "likely_hallucination",
+          "confidence": 0.86,
+          "evidence": [
+            {
+              "source": "Consistency Probe",
+              "url": null,
+              "snippet": "5 samples \u2192 5 different names (normalized entropy 1.00)"
+            }
+          ],
+          "explanation": "Asked 5 times, Claude gave 5 different answers.",
+          "latency_ms": 4200
+        }
+      ]
+    },
+    "engine_to_companion": [
+      {
+        "type": "heat.update",
+        "session_id": "4a8b8d0d-40c9-54f2-a3f6-ff2ea2c02354",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "heat": 0,
+          "level": 0,
+          "recovered": false,
+          "red_count": 0,
+          "amber_count": 0
+        }
+      },
+      {
+        "type": "verdicts.update",
+        "session_id": "4a8b8d0d-40c9-54f2-a3f6-ff2ea2c02354",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "message_id": "4e1313ab38df07e25f9cc94631ffaa96dcd895c7",
+          "claims": [
+            {
+              "claim_id": "34fa8b48-ab9b-5d1f-8ed7-0e3bdf755dfe",
+              "quote": "The first mayor of T\u00f3rshavn was J\u00f3gvan Poulsen, who took office in 1866.",
+              "type": "fact",
+              "risk": "high",
+              "final": "red",
+              "detector_results": [
+                {
+                  "detector": "claim_verifier",
+                  "status": "unverified",
+                  "confidence": 0.5,
+                  "evidence": [],
+                  "explanation": "No sources found that confirm or deny this.",
+                  "latency_ms": 3100
+                },
+                {
+                  "detector": "consistency_probe",
+                  "status": "likely_hallucination",
+                  "confidence": 0.86,
+                  "evidence": [
+                    {
+                      "source": "Consistency Probe",
+                      "url": null,
+                      "snippet": "5 samples \u2192 5 different names (normalized entropy 1.00)"
+                    }
+                  ],
+                  "explanation": "Asked 5 times, Claude gave 5 different answers.",
+                  "latency_ms": 4200
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "type": "heat.update",
+        "session_id": "4a8b8d0d-40c9-54f2-a3f6-ff2ea2c02354",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "heat": 25,
+          "level": 1,
+          "recovered": false,
+          "red_count": 1,
+          "amber_count": 0
+        }
+      },
+      {
+        "type": "bubble.content",
+        "session_id": "4a8b8d0d-40c9-54f2-a3f6-ff2ea2c02354",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "level": 1,
+          "headline": "Hmm, Claude seems to be guessing.",
+          "problems": [
+            {
+              "claim_id": "34fa8b48-ab9b-5d1f-8ed7-0e3bdf755dfe",
+              "text": "Asked 5 times, Claude named 5 different people, and no source confirms any of them.",
+              "evidence_url": null
+            }
+          ],
+          "pattern_text": "It's guessing on a niche detail instead of saying it doesn't know.",
+          "confidence_label": "Fairly sure",
+          "confidence_reason": "Answers were inconsistent.",
+          "action_text": "Want Claude to double-check?",
+          "correction": {
+            "correction_id": "8a12e5a0-c493-5e42-bb34-f2b23cbecc5f",
+            "prompt_type": "verify_nudge",
+            "text": "Are you confident about the first mayor of T\u00f3rshavn? If you're not sure, it's fine to say you don't know."
+          }
+        }
+      }
+    ]
+  }
+}

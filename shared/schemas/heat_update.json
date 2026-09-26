@@ -1,0 +1,41 @@
+{
+  "$id": "reigns/heat_update.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Payload of the 'heat.update' WebSocket message (PRD \u00a712).",
+  "properties": {
+    "amber_count": {
+      "default": 0,
+      "title": "Amber Count",
+      "type": "integer"
+    },
+    "heat": {
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Heat",
+      "type": "integer"
+    },
+    "level": {
+      "maximum": 4,
+      "minimum": 0,
+      "title": "Level",
+      "type": "integer"
+    },
+    "recovered": {
+      "default": false,
+      "title": "Recovered",
+      "type": "boolean"
+    },
+    "red_count": {
+      "default": 0,
+      "title": "Red Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "heat",
+    "level"
+  ],
+  "title": "HeatUpdate",
+  "type": "object"
+}

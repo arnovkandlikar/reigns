@@ -1,0 +1,32 @@
+# Secrets (PRD §14 rule 4)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Engine runtime data — local only (PRD §18 privacy)
+engine/reigns.db
+engine/*.db
+engine/*.db-journal
+engine/logs/*.log
+engine/.voice_cache/
+
+# macOS / Xcode (Role A)
+.DS_Store
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+
+# Editors
+.vscode/
+.idea/

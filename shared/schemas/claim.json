@@ -1,0 +1,97 @@
+{
+  "$id": "reigns/claim.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "claim_id": {
+      "title": "Claim Id",
+      "type": "string"
+    },
+    "code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Code"
+    },
+    "context": {
+      "default": "",
+      "title": "Context",
+      "type": "string"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "normalized": {
+      "title": "Normalized",
+      "type": "string"
+    },
+    "question": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Question"
+    },
+    "quote": {
+      "title": "Quote",
+      "type": "string"
+    },
+    "risk": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ],
+      "title": "Risk",
+      "type": "string"
+    },
+    "source_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Ref"
+    },
+    "type": {
+      "enum": [
+        "fact",
+        "paper",
+        "url",
+        "package",
+        "number",
+        "code",
+        "code_api",
+        "source_summary",
+        "other"
+      ],
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "claim_id",
+    "message_id",
+    "quote",
+    "normalized",
+    "type",
+    "risk"
+  ],
+  "title": "Claim",
+  "type": "object"
+}

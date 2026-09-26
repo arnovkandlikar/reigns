@@ -1,0 +1,41 @@
+{
+  "$id": "reigns/envelope.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    },
+    "type": {
+      "enum": [
+        "session.start",
+        "message.new",
+        "correction.inserted",
+        "feedback.disagree",
+        "verdicts.update",
+        "heat.update",
+        "bubble.content",
+        "voice.play",
+        "error"
+      ],
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "session_id"
+  ],
+  "title": "Envelope",
+  "type": "object"
+}

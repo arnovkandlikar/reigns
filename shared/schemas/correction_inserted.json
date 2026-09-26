@@ -1,0 +1,17 @@
+{
+  "$id": "reigns/correction_inserted.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Payload of the 'correction.inserted' WebSocket message (PRD \u00a712).",
+  "properties": {
+    "correction_id": {
+      "title": "Correction Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "correction_id"
+  ],
+  "title": "CorrectionInserted",
+  "type": "object"
+}

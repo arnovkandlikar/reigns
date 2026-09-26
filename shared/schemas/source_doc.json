@@ -1,0 +1,25 @@
+{
+  "$id": "reigns/source_doc.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "doc_id",
+    "message_id",
+    "text"
+  ],
+  "title": "SourceDoc",
+  "type": "object"
+}

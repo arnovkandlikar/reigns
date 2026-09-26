@@ -1,0 +1,10 @@
+{
+  "type": "session.start",
+  "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+  "ts": "2026-10-01T14:03:22Z",
+  "payload": {
+    "app": "claude",
+    "app_version": "unknown",
+    "companion_version": "1.0"
+  }
+}

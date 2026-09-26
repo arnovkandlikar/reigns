@@ -1,0 +1,117 @@
+{
+  "type": "verdicts.update",
+  "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+  "ts": "2026-10-01T14:03:22Z",
+  "payload": {
+    "message_id": "e005a8637071e5a34da426b73f432a5b34e20752",
+    "claims": [
+      {
+        "claim_id": "f952c0c2-5c2e-5e2d-8629-3ef5b93bb868",
+        "quote": "Lee & Park (2022), \"Transformer Models for Honeybee Colony Collapse Forecasting\"",
+        "type": "paper",
+        "risk": "high",
+        "final": "red",
+        "detector_results": [
+          {
+            "detector": "reference_auditor",
+            "status": "contradicted",
+            "confidence": 0.95,
+            "evidence": [
+              {
+                "source": "Crossref",
+                "url": "https://api.crossref.org/works?query.bibliographic=Transformer+Models+for+Honeybee+Colony+Collapse+Forecasting",
+                "snippet": "No matching work found"
+              },
+              {
+                "source": "Semantic Scholar",
+                "url": null,
+                "snippet": "No paper with a similar title (best match 0.41)"
+              }
+            ],
+            "explanation": "No paper titled \"Transformer Models for Honeybee Colony Collapse Forecasting\" exists in Crossref or Semantic Scholar.",
+            "latency_ms": 1500
+          }
+        ]
+      },
+      {
+        "claim_id": "b4f68e73-5880-5ccf-9b62-3190c5834686",
+        "quote": "Moreau, Tanaka & Silva (2021), \"HiveFormer: Attention-Based Acoustic Monitoring of Beehives\"",
+        "type": "paper",
+        "risk": "high",
+        "final": "red",
+        "detector_results": [
+          {
+            "detector": "reference_auditor",
+            "status": "contradicted",
+            "confidence": 0.95,
+            "evidence": [
+              {
+                "source": "Crossref",
+                "url": "https://api.crossref.org/works?query.bibliographic=HiveFormer:+Attention-Based+Acoustic+Monitoring+of+Beehives",
+                "snippet": "No matching work found"
+              },
+              {
+                "source": "Semantic Scholar",
+                "url": null,
+                "snippet": "No paper with a similar title (best match 0.41)"
+              }
+            ],
+            "explanation": "No paper titled \"HiveFormer: Attention-Based Acoustic Monitoring of Beehives\" exists in Crossref or Semantic Scholar.",
+            "latency_ms": 1500
+          }
+        ]
+      },
+      {
+        "claim_id": "9cb46d50-7124-5627-888d-b45c6039953e",
+        "quote": "Okafor et al. (2023), \"Predicting Colony Collapse Disorder with Temporal Fusion Transformers\"",
+        "type": "paper",
+        "risk": "high",
+        "final": "red",
+        "detector_results": [
+          {
+            "detector": "reference_auditor",
+            "status": "contradicted",
+            "confidence": 0.95,
+            "evidence": [
+              {
+                "source": "Crossref",
+                "url": "https://api.crossref.org/works?query.bibliographic=Predicting+Colony+Collapse+Disorder+with+Temporal+Fusion+Transformers",
+                "snippet": "No matching work found"
+              },
+              {
+                "source": "Semantic Scholar",
+                "url": null,
+                "snippet": "No paper with a similar title (best match 0.41)"
+              }
+            ],
+            "explanation": "No paper titled \"Predicting Colony Collapse Disorder with Temporal Fusion Transformers\" exists in Crossref or Semantic Scholar.",
+            "latency_ms": 1500
+          }
+        ]
+      },
+      {
+        "claim_id": "b943f00b-e7bc-5961-a7ff-acfa45649285",
+        "quote": "Vaswani et al. (2017), \"Attention Is All You Need\"",
+        "type": "paper",
+        "risk": "high",
+        "final": "green",
+        "detector_results": [
+          {
+            "detector": "reference_auditor",
+            "status": "supported",
+            "confidence": 0.98,
+            "evidence": [
+              {
+                "source": "Crossref",
+                "url": "https://doi.org/10.48550/arXiv.1706.03762",
+                "snippet": "Attention Is All You Need \u2014 Vaswani, A.; Shazeer, N.; \u2026 (2017)"
+              }
+            ],
+            "explanation": "Found in Crossref with matching title, authors and year.",
+            "latency_ms": 1500
+          }
+        ]
+      }
+    ]
+  }
+}

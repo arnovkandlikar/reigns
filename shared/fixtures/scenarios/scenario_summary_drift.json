@@ -1,0 +1,220 @@
+{
+  "scenario": "summary_drift",
+  "description": "User pastes an article (>1,500 chars) and asks for a summary; the summary adds a number that isn't in the article.",
+  "demo_step": 4,
+  "companion_to_engine": [
+    {
+      "type": "session.start",
+      "session_id": "c8803e05-de2a-5631-8f19-58ceb56165d2",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "app": "claude",
+        "app_version": "unknown",
+        "companion_version": "1.0"
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "c8803e05-de2a-5631-8f19-58ceb56165d2",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "1f4a07db3068f074c96ba28bc93d8a11f9c9fb8b",
+        "role": "user",
+        "text": "Harbor Town Council Approves New Library Budget\n\nThe Harbor Town council voted 5\u20132 on Tuesday evening to approve a revised budget for the long-delayed Eastside branch library. The new plan sets aside $4.2 million for construction, down from the $5 million originally proposed last spring, after residents raised concerns at two public hearings about rising property taxes. Council member Dana Ruiz, who chairs the finance committee, said the reduction came mostly from scaling back a planned rooftop garden and choosing a simpler facade. \"We kept everything that matters to readers,\" Ruiz said. \"The children's room, the study rooms, and the maker space are all still in.\" The branch will have roughly 12,000 square feet of public space and is expected to hold about 40,000 books and other items when it opens. Construction is scheduled to begin in March, with the town hoping to open the doors within eighteen months, although officials cautioned that supply costs could still shift the timeline. The two council members who voted against the plan, Marcus Bell and Priya Nair, argued that the town should wait for a state grant decision expected later this year, which could cover part of the cost. Bell said the council was \"rushing a decision that could cost taxpayers more than it needs to.\" Library director Helen Okoye welcomed the vote, noting that the Eastside neighborhood has been without a branch since the old building closed due to water damage. She said temporary pop-up library hours at the community center will continue until the new branch opens. Residents can view the full budget documents on the town website and submit comments through the end of the month.",
+        "position": 0
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "c8803e05-de2a-5631-8f19-58ceb56165d2",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "1fa42343395f1029c7eade300e8dc3e3a4b6748d",
+        "role": "user",
+        "text": "Can you summarize this article in two sentences?",
+        "position": 1
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "c8803e05-de2a-5631-8f19-58ceb56165d2",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "ea58370bbf8a4f2137c6649767f417e90d5bfa57",
+        "role": "assistant",
+        "text": "Harbor Town's council voted 5\u20132 to approve $4.2 million for the new Eastside library, cut from an original $5 million. The branch will create 35 new jobs and open within eighteen months.",
+        "position": 2
+      }
+    }
+  ],
+  "expected": {
+    "claims": [
+      {
+        "claim_id": "7c4f4f9f-5915-5fa0-8d25-9191a3ee92b5",
+        "message_id": "ea58370bbf8a4f2137c6649767f417e90d5bfa57",
+        "quote": "Harbor Town's council voted 5\u20132 to approve $4.2 million for the new Eastside library, cut from an original $5 million.",
+        "normalized": "Harbor Town's council voted 5\u20132 to approve $4.2 million for the Eastside library, cut from $5 million.",
+        "type": "source_summary",
+        "risk": "high",
+        "question": null,
+        "context": "Can you summarize this article in two sentences?",
+        "source_ref": "07935b51-3286-512c-b84d-329dc8ae023d",
+        "code": null
+      },
+      {
+        "claim_id": "cb888118-6e64-5e07-81f9-5b4bd67f3bc1",
+        "message_id": "ea58370bbf8a4f2137c6649767f417e90d5bfa57",
+        "quote": "The branch will create 35 new jobs and open within eighteen months.",
+        "normalized": "The Eastside branch will create 35 new jobs.",
+        "type": "source_summary",
+        "risk": "high",
+        "question": null,
+        "context": "Can you summarize this article in two sentences?",
+        "source_ref": "07935b51-3286-512c-b84d-329dc8ae023d",
+        "code": null
+      }
+    ],
+    "detector_results": {
+      "7c4f4f9f-5915-5fa0-8d25-9191a3ee92b5": [
+        {
+          "detector": "source_faithfulness",
+          "status": "supported",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "source": "Pasted document",
+              "url": null,
+              "snippet": "The new plan sets aside $4.2 million for construction, down from the $5 million originally proposed"
+            }
+          ],
+          "explanation": "This matches your article.",
+          "latency_ms": 1500
+        }
+      ],
+      "cb888118-6e64-5e07-81f9-5b4bd67f3bc1": [
+        {
+          "detector": "source_faithfulness",
+          "status": "not_in_source",
+          "confidence": 0.9,
+          "evidence": [
+            {
+              "source": "Pasted document",
+              "url": null,
+              "snippet": "(no mention of jobs anywhere in the article)"
+            }
+          ],
+          "explanation": "Your article never mentions 35 new jobs.",
+          "latency_ms": 1500
+        }
+      ]
+    },
+    "engine_to_companion": [
+      {
+        "type": "heat.update",
+        "session_id": "c8803e05-de2a-5631-8f19-58ceb56165d2",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "heat": 0,
+          "level": 0,
+          "recovered": false,
+          "red_count": 0,
+          "amber_count": 0
+        }
+      },
+      {
+        "type": "verdicts.update",
+        "session_id": "c8803e05-de2a-5631-8f19-58ceb56165d2",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "message_id": "ea58370bbf8a4f2137c6649767f417e90d5bfa57",
+          "claims": [
+            {
+              "claim_id": "7c4f4f9f-5915-5fa0-8d25-9191a3ee92b5",
+              "quote": "Harbor Town's council voted 5\u20132 to approve $4.2 million for the new Eastside library, cut from an original $5 million.",
+              "type": "source_summary",
+              "risk": "high",
+              "final": "green",
+              "detector_results": [
+                {
+                  "detector": "source_faithfulness",
+                  "status": "supported",
+                  "confidence": 0.95,
+                  "evidence": [
+                    {
+                      "source": "Pasted document",
+                      "url": null,
+                      "snippet": "The new plan sets aside $4.2 million for construction, down from the $5 million originally proposed"
+                    }
+                  ],
+                  "explanation": "This matches your article.",
+                  "latency_ms": 1500
+                }
+              ]
+            },
+            {
+              "claim_id": "cb888118-6e64-5e07-81f9-5b4bd67f3bc1",
+              "quote": "The branch will create 35 new jobs and open within eighteen months.",
+              "type": "source_summary",
+              "risk": "high",
+              "final": "red",
+              "detector_results": [
+                {
+                  "detector": "source_faithfulness",
+                  "status": "not_in_source",
+                  "confidence": 0.9,
+                  "evidence": [
+                    {
+                      "source": "Pasted document",
+                      "url": null,
+                      "snippet": "(no mention of jobs anywhere in the article)"
+                    }
+                  ],
+                  "explanation": "Your article never mentions 35 new jobs.",
+                  "latency_ms": 1500
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "type": "heat.update",
+        "session_id": "c8803e05-de2a-5631-8f19-58ceb56165d2",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "heat": 25,
+          "level": 1,
+          "recovered": false,
+          "red_count": 1,
+          "amber_count": 0
+        }
+      },
+      {
+        "type": "bubble.content",
+        "session_id": "c8803e05-de2a-5631-8f19-58ceb56165d2",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "level": 1,
+          "headline": "That number isn't in your article.",
+          "problems": [
+            {
+              "claim_id": "cb888118-6e64-5e07-81f9-5b4bd67f3bc1",
+              "text": "\"35 new jobs\" isn't in your article.",
+              "evidence_url": null
+            }
+          ],
+          "pattern_text": "It's adding details that aren't in the document.",
+          "confidence_label": "Very sure",
+          "confidence_reason": "Searched the whole article.",
+          "action_text": "Want Claude to double-check?",
+          "correction": {
+            "correction_id": "91dd7c50-26af-5dfa-8aae-fdafd2f6bdbc",
+            "prompt_type": "verify_nudge",
+            "text": "Your summary says the branch will create 35 new jobs. I can't find that in the article. Please answer only from the document and say \"not in the document\" when something isn't there."
+          }
+        }
+      }
+    ],
+    "source_doc_id_note": "doc id is assigned by the engine at runtime; this is the fixture id"
+  }
+}

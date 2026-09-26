@@ -1,0 +1,125 @@
+{
+  "$defs": {
+    "BubbleProblem": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {
+          "title": "Claim Id",
+          "type": "string"
+        },
+        "evidence_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Url"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "claim_id",
+        "text"
+      ],
+      "title": "BubbleProblem",
+      "type": "object"
+    },
+    "Correction": {
+      "additionalProperties": false,
+      "properties": {
+        "correction_id": {
+          "title": "Correction Id",
+          "type": "string"
+        },
+        "prompt_type": {
+          "enum": [
+            "verify_nudge",
+            "targeted_correction",
+            "diagnostic_reset",
+            "fresh_start"
+          ],
+          "title": "Prompt Type",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "correction_id",
+        "prompt_type",
+        "text"
+      ],
+      "title": "Correction",
+      "type": "object"
+    }
+  },
+  "$id": "reigns/bubble_content.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Payload of the 'bubble.content' WebSocket message (PRD \u00a712).",
+  "properties": {
+    "action_text": {
+      "default": "",
+      "title": "Action Text",
+      "type": "string"
+    },
+    "confidence_label": {
+      "default": "",
+      "title": "Confidence Label",
+      "type": "string"
+    },
+    "confidence_reason": {
+      "default": "",
+      "title": "Confidence Reason",
+      "type": "string"
+    },
+    "correction": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Correction"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "headline": {
+      "title": "Headline",
+      "type": "string"
+    },
+    "level": {
+      "maximum": 4,
+      "minimum": 0,
+      "title": "Level",
+      "type": "integer"
+    },
+    "pattern_text": {
+      "default": "",
+      "title": "Pattern Text",
+      "type": "string"
+    },
+    "problems": {
+      "items": {
+        "$ref": "#/$defs/BubbleProblem"
+      },
+      "title": "Problems",
+      "type": "array"
+    }
+  },
+  "required": [
+    "level",
+    "headline"
+  ],
+  "title": "BubbleContent",
+  "type": "object"
+}

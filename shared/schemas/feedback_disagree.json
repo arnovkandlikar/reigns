@@ -1,0 +1,29 @@
+{
+  "$id": "reigns/feedback_disagree.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Payload of the 'feedback.disagree' WebSocket message (PRD \u00a712).",
+  "properties": {
+    "claim_id": {
+      "title": "Claim Id",
+      "type": "string"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    }
+  },
+  "required": [
+    "claim_id"
+  ],
+  "title": "FeedbackDisagree",
+  "type": "object"
+}

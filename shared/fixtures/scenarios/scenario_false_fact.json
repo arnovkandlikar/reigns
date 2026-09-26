@@ -1,0 +1,208 @@
+{
+  "scenario": "false_fact",
+  "description": "One wrong date (contradicted by Wikipedia) + one correct fact.",
+  "demo_step": null,
+  "companion_to_engine": [
+    {
+      "type": "session.start",
+      "session_id": "07103319-d09c-5540-acaf-8ff0871a9234",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "app": "claude",
+        "app_version": "unknown",
+        "companion_version": "1.0"
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "07103319-d09c-5540-acaf-8ff0871a9234",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "92b8fc2e345af0c4649f34ee75c6c7896b48e705",
+        "role": "user",
+        "text": "When was the Eiffel Tower finished and how tall is it?",
+        "position": 0
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "07103319-d09c-5540-acaf-8ff0871a9234",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "2801e3c4728cbcf3b08406f8c483ee5d4a3f88c1",
+        "role": "assistant",
+        "text": "The Eiffel Tower was completed in 1899 for the World's Fair. It stands about 330 metres tall including its antennas.",
+        "position": 1
+      }
+    }
+  ],
+  "expected": {
+    "claims": [
+      {
+        "claim_id": "5df64e40-df60-5ef5-a96e-5d0cd09018eb",
+        "message_id": "2801e3c4728cbcf3b08406f8c483ee5d4a3f88c1",
+        "quote": "The Eiffel Tower was completed in 1899 for the World's Fair.",
+        "normalized": "The Eiffel Tower was completed in 1899.",
+        "type": "fact",
+        "risk": "high",
+        "question": "In what year was the Eiffel Tower completed?",
+        "context": "When was the Eiffel Tower finished and how tall is it?",
+        "source_ref": null,
+        "code": null
+      },
+      {
+        "claim_id": "e6621704-6c22-56fc-8414-c7698623bf46",
+        "message_id": "2801e3c4728cbcf3b08406f8c483ee5d4a3f88c1",
+        "quote": "It stands about 330 metres tall including its antennas.",
+        "normalized": "The Eiffel Tower is about 330 metres tall including antennas.",
+        "type": "number",
+        "risk": "high",
+        "question": null,
+        "context": "When was the Eiffel Tower finished and how tall is it?",
+        "source_ref": null,
+        "code": null
+      }
+    ],
+    "detector_results": {
+      "5df64e40-df60-5ef5-a96e-5d0cd09018eb": [
+        {
+          "detector": "claim_verifier",
+          "status": "contradicted",
+          "confidence": 0.93,
+          "evidence": [
+            {
+              "source": "Wikipedia",
+              "url": "https://en.wikipedia.org/wiki/Eiffel_Tower",
+              "snippet": "Constructed from 1887 to 1889 as the centerpiece of the 1889 World's Fair"
+            }
+          ],
+          "explanation": "Wikipedia says it was completed in 1889, not 1899.",
+          "latency_ms": 1500
+        }
+      ],
+      "e6621704-6c22-56fc-8414-c7698623bf46": [
+        {
+          "detector": "claim_verifier",
+          "status": "supported",
+          "confidence": 0.9,
+          "evidence": [
+            {
+              "source": "Wikipedia",
+              "url": "https://en.wikipedia.org/wiki/Eiffel_Tower",
+              "snippet": "It is 330 metres (1,083 ft) tall"
+            }
+          ],
+          "explanation": "Matches Wikipedia.",
+          "latency_ms": 1500
+        }
+      ]
+    },
+    "engine_to_companion": [
+      {
+        "type": "heat.update",
+        "session_id": "07103319-d09c-5540-acaf-8ff0871a9234",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "heat": 0,
+          "level": 0,
+          "recovered": false,
+          "red_count": 0,
+          "amber_count": 0
+        }
+      },
+      {
+        "type": "verdicts.update",
+        "session_id": "07103319-d09c-5540-acaf-8ff0871a9234",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "message_id": "2801e3c4728cbcf3b08406f8c483ee5d4a3f88c1",
+          "claims": [
+            {
+              "claim_id": "5df64e40-df60-5ef5-a96e-5d0cd09018eb",
+              "quote": "The Eiffel Tower was completed in 1899 for the World's Fair.",
+              "type": "fact",
+              "risk": "high",
+              "final": "red",
+              "detector_results": [
+                {
+                  "detector": "claim_verifier",
+                  "status": "contradicted",
+                  "confidence": 0.93,
+                  "evidence": [
+                    {
+                      "source": "Wikipedia",
+                      "url": "https://en.wikipedia.org/wiki/Eiffel_Tower",
+                      "snippet": "Constructed from 1887 to 1889 as the centerpiece of the 1889 World's Fair"
+                    }
+                  ],
+                  "explanation": "Wikipedia says it was completed in 1889, not 1899.",
+                  "latency_ms": 1500
+                }
+              ]
+            },
+            {
+              "claim_id": "e6621704-6c22-56fc-8414-c7698623bf46",
+              "quote": "It stands about 330 metres tall including its antennas.",
+              "type": "number",
+              "risk": "high",
+              "final": "green",
+              "detector_results": [
+                {
+                  "detector": "claim_verifier",
+                  "status": "supported",
+                  "confidence": 0.9,
+                  "evidence": [
+                    {
+                      "source": "Wikipedia",
+                      "url": "https://en.wikipedia.org/wiki/Eiffel_Tower",
+                      "snippet": "It is 330 metres (1,083 ft) tall"
+                    }
+                  ],
+                  "explanation": "Matches Wikipedia.",
+                  "latency_ms": 1500
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "type": "heat.update",
+        "session_id": "07103319-d09c-5540-acaf-8ff0871a9234",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "heat": 25,
+          "level": 1,
+          "recovered": false,
+          "red_count": 1,
+          "amber_count": 0
+        }
+      },
+      {
+        "type": "bubble.content",
+        "session_id": "07103319-d09c-5540-acaf-8ff0871a9234",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "level": 1,
+          "headline": "Hmm, one date looks wrong.",
+          "problems": [
+            {
+              "claim_id": "5df64e40-df60-5ef5-a96e-5d0cd09018eb",
+              "text": "It said 1899; Wikipedia says 1889.",
+              "evidence_url": "https://en.wikipedia.org/wiki/Eiffel_Tower"
+            }
+          ],
+          "pattern_text": "",
+          "confidence_label": "Very sure",
+          "confidence_reason": "Found the date on Wikipedia.",
+          "action_text": "Want Claude to double-check?",
+          "correction": {
+            "correction_id": "210e4a68-228f-53b4-b07f-7aee82b04012",
+            "prompt_type": "verify_nudge",
+            "text": "Quick check: you said the Eiffel Tower was completed in 1899. Can you verify that date? If you're not sure, say so."
+          }
+        }
+      }
+    ]
+  }
+}

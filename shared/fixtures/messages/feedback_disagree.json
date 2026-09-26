@@ -1,0 +1,9 @@
+{
+  "type": "feedback.disagree",
+  "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+  "ts": "2026-10-01T14:03:22Z",
+  "payload": {
+    "claim_id": "f952c0c2-5c2e-5e2d-8629-3ef5b93bb868",
+    "note": "I know this paper exists, it's in my library"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "$id": "reigns/voice_play.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Payload of the 'voice.play' WebSocket message (PRD \u00a712).",
+  "properties": {
+    "audio_b64": {
+      "title": "Audio B64",
+      "type": "string"
+    },
+    "level": {
+      "maximum": 4,
+      "minimum": 0,
+      "title": "Level",
+      "type": "integer"
+    },
+    "mime": {
+      "default": "audio/mpeg",
+      "title": "Mime",
+      "type": "string"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text",
+    "audio_b64",
+    "level"
+  ],
+  "title": "VoicePlay",
+  "type": "object"
+}

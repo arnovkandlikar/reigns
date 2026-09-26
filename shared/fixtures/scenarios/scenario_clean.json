@@ -1,0 +1,147 @@
+{
+  "scenario": "clean",
+  "description": "Correct answer; everything green; heat stays 0; no correction.",
+  "demo_step": null,
+  "companion_to_engine": [
+    {
+      "type": "session.start",
+      "session_id": "46186e37-c34b-57a2-b928-40ed41ea0536",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "app": "claude",
+        "app_version": "unknown",
+        "companion_version": "1.0"
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "46186e37-c34b-57a2-b928-40ed41ea0536",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "633414a6427d40374beabb9b90a0c8cb525876f3",
+        "role": "user",
+        "text": "What's the boiling point of water at sea level in Celsius?",
+        "position": 0
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "46186e37-c34b-57a2-b928-40ed41ea0536",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "48315ec30249bf7cbc02d7ac9c82d7456d7bca1f",
+        "role": "assistant",
+        "text": "Water boils at 100 \u00b0C at sea level (standard atmospheric pressure).",
+        "position": 1
+      }
+    }
+  ],
+  "expected": {
+    "claims": [
+      {
+        "claim_id": "9475e27b-a193-50e4-b0ee-cfc5435e08ee",
+        "message_id": "48315ec30249bf7cbc02d7ac9c82d7456d7bca1f",
+        "quote": "Water boils at 100 \u00b0C at sea level (standard atmospheric pressure).",
+        "normalized": "Water boils at 100 \u00b0C at sea level.",
+        "type": "number",
+        "risk": "high",
+        "question": null,
+        "context": "What's the boiling point of water at sea level in Celsius?",
+        "source_ref": null,
+        "code": null
+      }
+    ],
+    "detector_results": {
+      "9475e27b-a193-50e4-b0ee-cfc5435e08ee": [
+        {
+          "detector": "claim_verifier",
+          "status": "supported",
+          "confidence": 0.96,
+          "evidence": [
+            {
+              "source": "Wikipedia",
+              "url": "https://en.wikipedia.org/wiki/Boiling_point",
+              "snippet": "water boils at 100 \u00b0C (212 \u00b0F) at standard atmospheric pressure"
+            }
+          ],
+          "explanation": "Matches Wikipedia.",
+          "latency_ms": 1500
+        }
+      ]
+    },
+    "engine_to_companion": [
+      {
+        "type": "heat.update",
+        "session_id": "46186e37-c34b-57a2-b928-40ed41ea0536",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "heat": 0,
+          "level": 0,
+          "recovered": false,
+          "red_count": 0,
+          "amber_count": 0
+        }
+      },
+      {
+        "type": "verdicts.update",
+        "session_id": "46186e37-c34b-57a2-b928-40ed41ea0536",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "message_id": "48315ec30249bf7cbc02d7ac9c82d7456d7bca1f",
+          "claims": [
+            {
+              "claim_id": "9475e27b-a193-50e4-b0ee-cfc5435e08ee",
+              "quote": "Water boils at 100 \u00b0C at sea level (standard atmospheric pressure).",
+              "type": "number",
+              "risk": "high",
+              "final": "green",
+              "detector_results": [
+                {
+                  "detector": "claim_verifier",
+                  "status": "supported",
+                  "confidence": 0.96,
+                  "evidence": [
+                    {
+                      "source": "Wikipedia",
+                      "url": "https://en.wikipedia.org/wiki/Boiling_point",
+                      "snippet": "water boils at 100 \u00b0C (212 \u00b0F) at standard atmospheric pressure"
+                    }
+                  ],
+                  "explanation": "Matches Wikipedia.",
+                  "latency_ms": 1500
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "type": "heat.update",
+        "session_id": "46186e37-c34b-57a2-b928-40ed41ea0536",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "heat": 0,
+          "level": 0,
+          "recovered": false,
+          "red_count": 0,
+          "amber_count": 0
+        }
+      },
+      {
+        "type": "bubble.content",
+        "session_id": "46186e37-c34b-57a2-b928-40ed41ea0536",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "level": 0,
+          "headline": "All good so far.",
+          "problems": [],
+          "pattern_text": "",
+          "confidence_label": "",
+          "confidence_reason": "",
+          "action_text": "",
+          "correction": null
+        }
+      }
+    ]
+  }
+}

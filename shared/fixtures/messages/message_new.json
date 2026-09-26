@@ -1,0 +1,11 @@
+{
+  "type": "message.new",
+  "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+  "ts": "2026-10-01T14:03:22Z",
+  "payload": {
+    "message_id": "54638a2e2cad08d1ddaa2ebe74b9e35d45f2b9b8",
+    "role": "user",
+    "text": "Can you list some research papers on using transformers to predict honeybee colony collapse? Include authors and years.",
+    "position": 0
+  }
+}

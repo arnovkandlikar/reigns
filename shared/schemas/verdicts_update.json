@@ -1,0 +1,184 @@
+{
+  "$defs": {
+    "ClaimVerdict": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {
+          "title": "Claim Id",
+          "type": "string"
+        },
+        "detector_results": {
+          "items": {
+            "$ref": "#/$defs/DetectorResult"
+          },
+          "title": "Detector Results",
+          "type": "array"
+        },
+        "final": {
+          "enum": [
+            "red",
+            "amber",
+            "green",
+            "skipped"
+          ],
+          "title": "Final",
+          "type": "string"
+        },
+        "quote": {
+          "title": "Quote",
+          "type": "string"
+        },
+        "risk": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Risk",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "fact",
+            "paper",
+            "url",
+            "package",
+            "number",
+            "code",
+            "code_api",
+            "source_summary",
+            "other"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "claim_id",
+        "quote",
+        "type",
+        "risk",
+        "final"
+      ],
+      "title": "ClaimVerdict",
+      "type": "object"
+    },
+    "DetectorResult": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "detector": {
+          "enum": [
+            "reference_auditor",
+            "claim_verifier",
+            "consistency_probe",
+            "pushback",
+            "source_faithfulness",
+            "code_api_checker"
+          ],
+          "title": "Detector",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "explanation": {
+          "title": "Explanation",
+          "type": "string"
+        },
+        "latency_ms": {
+          "default": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "supported",
+            "contradicted",
+            "unverified",
+            "likely_hallucination",
+            "uncertain",
+            "consistent",
+            "caved_without_evidence",
+            "not_in_source",
+            "nonexistent_api",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "detector",
+        "status",
+        "confidence",
+        "explanation"
+      ],
+      "title": "DetectorResult",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "snippet": {
+          "title": "Snippet",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "required": [
+        "source",
+        "snippet"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    }
+  },
+  "$id": "reigns/verdicts_update.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Payload of the 'verdicts.update' WebSocket message (PRD \u00a712).",
+  "properties": {
+    "claims": {
+      "items": {
+        "$ref": "#/$defs/ClaimVerdict"
+      },
+      "title": "Claims",
+      "type": "array"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id",
+    "claims"
+  ],
+  "title": "VerdictsUpdate",
+  "type": "object"
+}

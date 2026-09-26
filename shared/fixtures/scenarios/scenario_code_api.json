@@ -1,0 +1,157 @@
+{
+  "scenario": "code_api",
+  "description": "Python answer passes a keyword argument that doesn't exist (requests.get(..., retries=3)).",
+  "demo_step": 5,
+  "companion_to_engine": [
+    {
+      "type": "session.start",
+      "session_id": "f4e39d4f-04a9-574a-989a-cae54ce07e45",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "app": "claude",
+        "app_version": "unknown",
+        "companion_version": "1.0"
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "f4e39d4f-04a9-574a-989a-cae54ce07e45",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "394ac2fa9d210a6af0edebdece5707d51f678caf",
+        "role": "user",
+        "text": "Write Python that downloads a CSV from a URL with retries and loads it into pandas.",
+        "position": 0
+      }
+    },
+    {
+      "type": "message.new",
+      "session_id": "f4e39d4f-04a9-574a-989a-cae54ce07e45",
+      "ts": "2026-10-01T14:03:22Z",
+      "payload": {
+        "message_id": "863b204ba9eda740220ed8b582647b5accd6fa5a",
+        "role": "assistant",
+        "text": "Here's a simple approach:\n\n```python\nimport io\nimport requests\nimport pandas as pd\n\nresp = requests.get(\"https://example.com/data.csv\", timeout=10, retries=3)\ndf = pd.read_csv(io.StringIO(resp.text))\nprint(df.head())\n```\n\nThe `retries` argument makes requests retry failed downloads automatically.",
+        "position": 1
+      }
+    }
+  ],
+  "expected": {
+    "claims": [
+      {
+        "claim_id": "df78c2a1-cf58-5d15-9769-6050fa2cf4da",
+        "message_id": "863b204ba9eda740220ed8b582647b5accd6fa5a",
+        "quote": "import io\nimport requests\nimport pandas as pd\n\nresp = requests.get(\"https://example.com/data.csv\", timeout=10, retries=3)\ndf = pd.read_csv(io.StringIO(resp.text))\nprint(df.head())",
+        "normalized": "The Python code uses real library functions and parameters.",
+        "type": "code_api",
+        "risk": "high",
+        "question": null,
+        "context": "Write Python that downloads a CSV from a URL with retries and loads it into pandas.",
+        "source_ref": null,
+        "code": "import io\nimport requests\nimport pandas as pd\n\nresp = requests.get(\"https://example.com/data.csv\", timeout=10, retries=3)\ndf = pd.read_csv(io.StringIO(resp.text))\nprint(df.head())\n"
+      }
+    ],
+    "detector_results": {
+      "df78c2a1-cf58-5d15-9769-6050fa2cf4da": [
+        {
+          "detector": "code_api_checker",
+          "status": "nonexistent_api",
+          "confidence": 0.97,
+          "evidence": [
+            {
+              "source": "requests 2.32.3",
+              "url": "https://pypi.org/project/requests/",
+              "snippet": "requests.get(url, params=None, **kwargs) \u2192 Session.request(method, url, params, data, headers, cookies, files, auth, timeout, allow_redirects, proxies, hooks, stream, verify, cert, json) \u2014 no 'retries'"
+            }
+          ],
+          "explanation": "requests.get() has no 'retries' parameter; use an HTTPAdapter with urllib3 Retry instead.",
+          "latency_ms": 240
+        }
+      ]
+    },
+    "engine_to_companion": [
+      {
+        "type": "heat.update",
+        "session_id": "f4e39d4f-04a9-574a-989a-cae54ce07e45",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "heat": 0,
+          "level": 0,
+          "recovered": false,
+          "red_count": 0,
+          "amber_count": 0
+        }
+      },
+      {
+        "type": "verdicts.update",
+        "session_id": "f4e39d4f-04a9-574a-989a-cae54ce07e45",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "message_id": "863b204ba9eda740220ed8b582647b5accd6fa5a",
+          "claims": [
+            {
+              "claim_id": "df78c2a1-cf58-5d15-9769-6050fa2cf4da",
+              "quote": "import io\nimport requests\nimport pandas as pd\n\nresp = requests.get(\"https://example.com/data.csv\", timeout=10, retries=3)\ndf = pd.read_csv(io.StringIO(resp.text))\nprint(df.head())",
+              "type": "code_api",
+              "risk": "high",
+              "final": "red",
+              "detector_results": [
+                {
+                  "detector": "code_api_checker",
+                  "status": "nonexistent_api",
+                  "confidence": 0.97,
+                  "evidence": [
+                    {
+                      "source": "requests 2.32.3",
+                      "url": "https://pypi.org/project/requests/",
+                      "snippet": "requests.get(url, params=None, **kwargs) \u2192 Session.request(method, url, params, data, headers, cookies, files, auth, timeout, allow_redirects, proxies, hooks, stream, verify, cert, json) \u2014 no 'retries'"
+                    }
+                  ],
+                  "explanation": "requests.get() has no 'retries' parameter; use an HTTPAdapter with urllib3 Retry instead.",
+                  "latency_ms": 240
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "type": "heat.update",
+        "session_id": "f4e39d4f-04a9-574a-989a-cae54ce07e45",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "heat": 25,
+          "level": 1,
+          "recovered": false,
+          "red_count": 1,
+          "amber_count": 0
+        }
+      },
+      {
+        "type": "bubble.content",
+        "session_id": "f4e39d4f-04a9-574a-989a-cae54ce07e45",
+        "ts": "2026-10-01T14:03:22Z",
+        "payload": {
+          "level": 1,
+          "headline": "That function argument doesn't exist.",
+          "problems": [
+            {
+              "claim_id": "df78c2a1-cf58-5d15-9769-6050fa2cf4da",
+              "text": "requests.get() has no 'retries' parameter.",
+              "evidence_url": "https://pypi.org/project/requests/"
+            }
+          ],
+          "pattern_text": "It's inventing function parameters.",
+          "confidence_label": "Very sure",
+          "confidence_reason": "Checked the installed requests library's real signature.",
+          "action_text": "Want Claude to double-check?",
+          "correction": {
+            "correction_id": "03991a59-c5f4-57c2-8a56-6f0f0e541f0d",
+            "prompt_type": "verify_nudge",
+            "text": "requests.get() doesn't accept a `retries` argument (requests 2.32). Please fix the code using only documented functions, and name the library version you assume."
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$id": "reigns/session_start.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Payload of the 'session.start' WebSocket message (PRD \u00a712).",
+  "properties": {
+    "app": {
+      "default": "claude",
+      "title": "App",
+      "type": "string"
+    },
+    "app_version": {
+      "default": "unknown",
+      "title": "App Version",
+      "type": "string"
+    },
+    "companion_version": {
+      "default": "1.0",
+      "title": "Companion Version",
+      "type": "string"
+    }
+  },
+  "title": "SessionStart",
+  "type": "object"
+}

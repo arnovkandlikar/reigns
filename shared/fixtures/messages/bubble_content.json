@@ -1,0 +1,35 @@
+{
+  "type": "bubble.content",
+  "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+  "ts": "2026-10-01T14:03:22Z",
+  "payload": {
+    "level": 3,
+    "headline": "Heads up: Claude is making up sources.",
+    "problems": [
+      {
+        "claim_id": "f952c0c2-5c2e-5e2d-8629-3ef5b93bb868",
+        "text": "The paper \"Lee & Park, 2022\" doesn't exist.",
+        "evidence_url": "https://api.crossref.org/works?query.bibliographic=Transformer+Models+for+Honeybee+Colony+Collapse+Forecasting"
+      },
+      {
+        "claim_id": "b4f68e73-5880-5ccf-9b62-3190c5834686",
+        "text": "\"HiveFormer\" (Moreau et al., 2021) doesn't exist.",
+        "evidence_url": null
+      },
+      {
+        "claim_id": "9cb46d50-7124-5627-888d-b45c6039953e",
+        "text": "\"Okafor et al., 2023\" doesn't exist.",
+        "evidence_url": null
+      }
+    ],
+    "pattern_text": "It's filling gaps with confident guesses instead of saying it doesn't know.",
+    "confidence_label": "Very sure",
+    "confidence_reason": "Checked Crossref and Semantic Scholar.",
+    "action_text": "I wrote a prompt to fix this.",
+    "correction": {
+      "correction_id": "88d02062-bbb6-5d64-91b1-81dc8a6032cc",
+      "prompt_type": "diagnostic_reset",
+      "text": "I want to pause and fix a few problems before we continue.\n\n1. You cited \"Lee & Park (2022)\", \"Moreau, Tanaka & Silva (2021)\" and \"Okafor et al. (2023)\"; none of these exist in Crossref or Semantic Scholar.\n\nPlease list only papers you're confident exist, and say so if you can't find any on this exact topic. Mark each one [verified] or [unverified]. It's fine to say you don't know."
+    }
+  }
+}
