@@ -20,6 +20,10 @@ final class PetViewModel {
     var pendingFix: Correction?
     /// FR-A9 fallback note shown in the bubble (e.g. "Press ⌘V in Claude").
     var fixNote: String?
+    /// A new issue arrived that the user hasn't opened yet (shows the "Click me!" callout).
+    var hasUnseenIssue = false
+    /// The horse has spoken in this chat, so there's a line to replay.
+    var hasVoiceLine = false
     var isBubbleOpen = false
     var isDetailsOpen = false
 }

@@ -64,8 +64,18 @@ Or open `Reigns.xcodeproj` in Xcode and press Run.
 - [x] Scanning indicator: while the engine checks a reply Reigns sent (message.new → its
       verdicts.update; 30 s safety timeout), a thought bubble with a galloping horse shows above
       the pet. Debug: menu › Preview Level › Scanning (thinking).
-- [ ] · FR-A6/A7 pet levels · FR-A9 Fix it ·
-      FR-A10 onboarding · FR-A11 mock mode
+- [x] FR-A10 onboarding (`Reigns/Onboarding/`): shown at launch whenever Accessibility permission
+      is missing. Explains why it's needed (only reads Claude, only types on Fix it, never sends),
+      opens the Accessibility pane, detects the grant within ~1 s, then closes and starts watching
+      without a restart. Menu › Set Up Accessibility… reopens it (debug: Preview Level › Onboarding Window).
+- [x] FR-A11 mock mode (`Reigns/Networking/MockEngine.swift`): `REIGNS_MOCK=1` (or `WITNESS_MOCK=1`),
+      or debug menu › Preview Level › Mock Engine (fixtures). Loops through
+      `shared/fixtures/scenarios/*.json` (demo scenarios first): each scenario is a fresh chat, each
+      Claude reply shows the thinking bubble, then the recorded engine messages go through the normal
+      EngineClient decoding path. No engine connection and no Claude reading while on.
+      Run: `open --env REIGNS_MOCK=1 companion/build/Debug/Reigns.app`
+- [x] "Click me!" callout above the pet when there's an issue the user hasn't opened yet
+- [x] Bubble voice controls: replay the last spoken line, mute/unmute (same setting as the menu)
 
 ## AX tree findings (Day-One Test, PRD §19 Q5)
 

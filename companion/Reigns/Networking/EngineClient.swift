@@ -11,6 +11,7 @@ final class EngineClient: NSObject {
         case offline = "Offline"
         case connecting = "Connecting…"
         case connected = "Connected"
+        case mock = "Mock (fixtures)"
     }
 
     var onStatus: ((Status) -> Void)?
@@ -56,6 +57,25 @@ final class EngineClient: NSObject {
         connect()
     }
 
+    /// Disconnects and stops reconnecting (mock mode takes over).
+    func stop() {
+        isRunning = false
+        reconnectWork?.cancel()
+        task?.cancel(with: .normalClosure, reason: nil)
+        task = nil
+        queue.removeAll()
+        setStatus(.offline)
+    }
+
+    /// FR-A11: mock mode feeds recorded engine messages through the normal decoding path.
+    func deliver(_ data: Data) {
+        handle(.data(data))
+    }
+
+    func setMockStatus() {
+        setStatus(.mock)
+    }
+
     /// New conversation → new engine session on a fresh connection. Queued messages belong to the
     /// old conversation, so they're dropped. `chatKey` identifies the chat so the engine can put
     /// back its saved heat (nil for a chat we can't identify yet).
@@ -88,6 +108,7 @@ final class EngineClient: NSObject {
     }
 
     private func send(_ type: String, _ payload: some Encodable) {
+        guard isRunning else { return }  // mock mode: nothing goes out
         guard let data = encode(type, payload) else { return }
         if status == .connected, let task {
             Log.net.info("Sent \(type, privacy: .public)")
