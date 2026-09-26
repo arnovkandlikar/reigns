@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let dockTracker = DockTracker()
     private var watcher: ConversationWatcher!
     private var engine: EngineClient!
+    private var inserter: ComposerInserter!
+    private let voice = VoicePlayer()
     private var pet: PetPanelController!
     private var frontmostClaude: NSRunningApplication?
 
@@ -35,7 +37,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine.onHeat = { [weak self] heat in self?.pet.apply(heat) }
         engine.onBubble = { [weak self] bubble in self?.pet.apply(bubble) }
         engine.onVerdicts = { [weak self] verdicts in self?.pet.apply(verdicts) }
+        engine.onVoice = { [weak self] line in
+            guard let self, !self.state.isVoiceMuted, !self.state.isPaused else { return }
+            self.voice.play(line)
+        }
         pet.onDisagree = { [weak self] claimID in self?.engine.sendDisagree(claimID: claimID) }
+        inserter = ComposerInserter(composerDOMClass: rules.composerDOMClass)
+        pet.onFixIt = { [weak self] correction, mode in self?.fixIt(correction, mode: mode) }
         engine.start()
 
         watcher = ConversationWatcher(reader: ConversationReader(rules: rules.conversation))
@@ -105,6 +113,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     #endif
+
+    /// FR-A9: paste the correction into Claude's message box (never sends it), then tell the engine.
+    private func fixIt(_ correction: Correction, mode: ComposerInserter.Mode?) {
+        guard let app = frontmostClaude
+            ?? NSRunningApplication.runningApplications(withBundleIdentifier: rules.claudeBundleID).first
+        else { return }
+
+        var chosen = mode ?? .replace
+        if mode == nil {
+            switch inserter.state(pid: app.processIdentifier) {
+            case .hasText:
+                pet.askReplaceOrAdd(correction)  // "Replace or add to your text?"
+                return
+            case .empty, .notFound:
+                chosen = .replace
+            }
+        }
+
+        inserter.insert(correction.text, into: app, mode: chosen) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+            case .inserted:
+                Log.pet.info("Fix it: prompt inserted (\(correction.promptType.rawValue, privacy: .public))")
+                self.engine.sendCorrectionInserted(correctionID: correction.correctionID)
+                self.pet.closeBubbleAfterFix()
+            case .copiedToClipboard:
+                self.pet.showFixNote("Couldn't reach Claude's message box. The fix is on your clipboard: click the box and press ⌘V.")
+                self.engine.sendCorrectionInserted(correctionID: correction.correctionID)
+            }
+        }
+    }
 
     private func claudeVersion() -> String {
         let app = frontmostClaude

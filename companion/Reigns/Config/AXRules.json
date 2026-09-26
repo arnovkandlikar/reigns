@@ -2,6 +2,7 @@
   "claude_bundle_id": "com.anthropic.claudefordesktop",
   "pet_inset_px": 24,
   "window_poll_ms": 250,
+  "composer_dom_class": "ProseMirror",
   "conversation": {
     "user_heading_prefix": "You said: ",
     "assistant_heading_prefix": "Claude responded: ",

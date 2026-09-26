@@ -15,6 +15,7 @@ struct ReignsApp: App {
                 Text("Accessibility permission needed")
             }
             Text("Engine: \(state.engineStatus.rawValue)")
+            Toggle("Mute Voice", isOn: $state.isVoiceMuted)
             #if DEBUG
             Menu("Preview Level") {
                 ForEach(0..<5) { level in
@@ -39,4 +40,7 @@ final class AppState {
     var isPaused = false
     var axTrusted = false
     var engineStatus = EngineClient.Status.offline
+    var isVoiceMuted = UserDefaults.standard.bool(forKey: "voiceMuted") {
+        didSet { UserDefaults.standard.set(isVoiceMuted, forKey: "voiceMuted") }
+    }
 }

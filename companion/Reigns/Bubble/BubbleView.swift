@@ -3,6 +3,8 @@ import SwiftUI
 /// What the bubble's buttons do; wired up by PetPanelController.
 struct BubbleActions {
     var fixIt: (Correction) -> Void
+    /// Answer to "Replace or add to your text?" (nil = cancel).
+    var fixChoice: (Correction, ComposerInserter.Mode?) -> Void
     var disagree: (BubbleProblem) -> Void
     var dismiss: () -> Void
 }
@@ -66,7 +68,17 @@ struct BubbleView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            buttons
+            if let note = model.fixNote {
+                Text(note)
+                    .font(.system(size: 12, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let pending = model.pendingFix {
+                fixChoice(pending)
+            } else {
+                buttons
+            }
         }
         .padding(14)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -88,6 +100,24 @@ struct BubbleView: View {
             }
         }
         .foregroundStyle(.secondary)
+    }
+
+    /// FR-A9: the message box already has the user's text.
+    private func fixChoice(_ correction: Correction) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Claude's message box already has text. Replace it or add to it?")
+                .font(.system(size: 12))
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Button("Replace") { actions.fixChoice(correction, .replace) }
+                    .buttonStyle(.borderedProminent)
+                    .tint(PetLevel.color(content.level))
+                Button("Add to it") { actions.fixChoice(correction, .append) }
+                Spacer(minLength: 0)
+                Button("Cancel") { actions.fixChoice(correction, nil) }
+            }
+            .controlSize(.small)
+        }
     }
 
     private var buttons: some View {
