@@ -14,6 +14,18 @@
       "title": "App Version",
       "type": "string"
     },
+    "character": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Character"
+    },
     "chat_key": {
       "anyOf": [
         {

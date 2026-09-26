@@ -132,12 +132,37 @@ PRAISE_LINES_ES = {
         "Buena respuesta.", "Nada que corregir.", "Revisado, todo exacto.", "Todo en orden.",
     ],
 }
+# Marley the unicorn (session.start character "marley"): bubbly and a little magical.
+OPENERS["unicorn"] = [
+    "Oh my stars!", "Sparkle check!", "Eek, wait a sec!", "Oopsie, heads up!", "Glitter alert!",
+    "Wait, wait, wait!", "Hmm, something's not so magical here.", "Hold your rainbows.",
+    "Uh-oh, friend.", "Pause the sparkles.", "Oh dear!", "Psst, heads up!",
+]
+PRAISE_LINES["unicorn"] = [
+    "Sparkly clean!", "That one's pure magic.", "All checks out, friend!", "Rainbows all around!",
+    "Totally true, love it.", "Shiny and correct!", "Magic! No mistakes.", "That's the real deal, yay!",
+    "Glitter-approved!", "Nothing fishy there!", "Perfectly true, woohoo!", "Great job, Claude!",
+]
+OPENERS_ES["unicorn"] = [
+    "¡Ay, mis estrellitas!", "¡Revisión de brillitos!", "¡Uy, un momentito!", "¡Ups, atención!",
+    "¡Alerta de purpurina!", "¡Espera, espera!", "Mmm, aquí algo no es tan mágico.",
+    "Guarda tus arcoíris.", "Ay, amiguito.", "Pausa a los brillos.", "¡Ay, no!", "Psst, ojo.",
+]
+PRAISE_LINES_ES["unicorn"] = [
+    "¡Limpiecito y brillante!", "Eso es pura magia.", "¡Todo cuadra, amiguito!",
+    "¡Arcoíris para todos!", "Totalmente cierto, me encanta.", "¡Brillante y correcto!",
+    "¡Magia! Ni un error.", "¡Eso es de verdad, yupi!", "¡Aprobado con purpurina!",
+    "¡Nada raro por aquí!", "Perfectamente cierto, ¡bien!", "¡Buen trabajo, Claude!",
+]
 OPENERS_BY_LANG = {"en": OPENERS, "es": OPENERS_ES}
 PRAISE_BY_LANG = {"en": PRAISE_LINES, "es": PRAISE_LINES_ES}
 RECOVERED = {
     ("en", "cowboy"): "Yeehaw, fixed it, partner!", ("en", "plain"): "Fixed it!",
     ("es", "cowboy"): "¡Yija! Arreglado, compañero.", ("es", "plain"): "¡Arreglado!",
+    ("en", "unicorn"): "Yay, all fixed! Sparkles!", ("es", "unicorn"): "¡Yupi, todo arreglado! ¡Brillitos!",
 }
+# Which pet is on screen (session.start "character") → its personality. Anything else = the horse.
+UNICORN_NAMES = ("marley", "unicorn")
 LANGUAGES = ("en", "es")
 PRAISE_GAP_S = 45.0  # praise at most this often, so it stays nice instead of naggy
 
@@ -146,6 +171,21 @@ _transport: Optional[httpx.AsyncBaseTransport] = None  # tests inject a MockTran
 
 def enabled() -> bool:
     return bool(os.environ.get("ELEVENLABS_API_KEY") and os.environ.get("REIGNS_VOICE_ID"))
+
+
+def persona(character: Optional[str] = None) -> str:
+    """'unicorn' for Marley; otherwise the horse's REIGNS_VOICE_STYLE (cowboy or plain)."""
+    if (character or "").strip().lower() in UNICORN_NAMES:
+        return "unicorn"
+    return style()
+
+
+def voice_id(p: Optional[str] = None) -> str:
+    """The unicorn has her own ElevenLabs voice (REIGNS_UNICORN_VOICE_ID); falls back to the
+    horse's REIGNS_VOICE_ID so she still talks if it isn't set."""
+    if p == "unicorn" and os.environ.get("REIGNS_UNICORN_VOICE_ID"):
+        return os.environ["REIGNS_UNICORN_VOICE_ID"]
+    return os.environ.get("REIGNS_VOICE_ID", "")
 
 
 def _model() -> str:
@@ -208,16 +248,18 @@ def _pick(options: list[str], recent: Optional[deque] = None) -> str:
     return choice
 
 
-def pick_opener(recent: Optional[deque] = None, lang: Optional[str] = None) -> str:
-    return _pick(OPENERS_BY_LANG[language(lang)][style()], recent)
+def pick_opener(recent: Optional[deque] = None, lang: Optional[str] = None,
+                p: Optional[str] = None) -> str:
+    return _pick(OPENERS_BY_LANG[language(lang)][p or style()], recent)
 
 
-def pick_praise(recent: Optional[deque] = None, lang: Optional[str] = None) -> str:
-    return _pick(PRAISE_BY_LANG[language(lang)][style()], recent)
+def pick_praise(recent: Optional[deque] = None, lang: Optional[str] = None,
+                p: Optional[str] = None) -> str:
+    return _pick(PRAISE_BY_LANG[language(lang)][p or style()], recent)
 
 
-def recovered_line(lang: Optional[str] = None) -> str:
-    return RECOVERED[(language(lang), style())]
+def recovered_line(lang: Optional[str] = None, p: Optional[str] = None) -> str:
+    return RECOVERED[(language(lang), p or style())]
 
 
 def clip_words(text: str, n: int = MAX_WORDS) -> str:
@@ -259,9 +301,11 @@ def line_for(
     spoken_ids: Optional[set[str]] = None,
     opener: Optional[str] = None,
     lang: Optional[str] = None,
+    p: Optional[str] = None,
 ) -> Optional[str]:
+    p = p or style()
     if recovered:
-        return recovered_line(lang)
+        return recovered_line(lang, p)
     if mode() == "short":
         if level >= 3 and level > prev_level and bubble.headline:
             return clip_words(bubble.headline)
@@ -272,8 +316,8 @@ def line_for(
     rose_to_alarm = level >= 3 and level > prev_level
     if _new_problem_ids(bubble, spoken_ids or set()) or rose_to_alarm:
         text = full_line(bubble)
-        if style() == "cowboy":
-            first = opener or OPENERS_BY_LANG[language(lang)]["cowboy"][0]
+        if p in ("cowboy", "unicorn"):
+            first = opener or OPENERS_BY_LANG[language(lang)][p][0]
             return clip_sentences(f"{first} {text}", FULL_MAX_WORDS)
         return text
     return None
@@ -290,6 +334,12 @@ _SUMMARY_SYSTEM = {
     "plain": (
         "You are Reigns, a friendly assistant pet that speaks out loud when Claude gets something "
         "wrong in a chat. Sound natural and conversational, like a helpful friend."
+    ),
+    "unicorn": (
+        "You are Marley, a cheerful, sparkly unicorn who watches over someone's chat with Claude "
+        "and speaks out loud when Claude gets something wrong. Sound bubbly, warm and upbeat, a "
+        "little magical (one touch of sparkles, rainbows or stars per reply at most) but never "
+        "babyish or cartoonish, and keep the facts exact. Never say 'partner' or 'howdy'."
     ),
 }
 _SUMMARY_RULES = (
@@ -327,12 +377,14 @@ def _clean_spoken(text: str) -> str:
 _SPANISH = (
     " Speak in natural Latin American Spanish, even though the notes are in English (translate "
     "them; keep names, numbers and titles exact). For the cowboy style, use Spanish folksy words "
-    "like 'compañero', 'amigo' or 'híjole' now and then instead of English ones."
+    "like 'compañero', 'amigo' or 'híjole' now and then instead of English ones; for the unicorn, "
+    "keep it bubbly ('amiguito', 'brillitos') without overdoing it."
 )
 
 
 async def summarize(
-    bubble: BubbleContent, opener: Optional[str] = None, lang: Optional[str] = None
+    bubble: BubbleContent, opener: Optional[str] = None, lang: Optional[str] = None,
+    p: Optional[str] = None,
 ) -> Optional[str]:
     """Natural spoken summary of the whole bubble via the fast model. None if unavailable/slow."""
     try:
@@ -341,7 +393,7 @@ async def summarize(
             return None
         raw = await asyncio.wait_for(
             llm.complete_text(
-                _SUMMARY_SYSTEM[style()],
+                _SUMMARY_SYSTEM[p or style()],
                 _SUMMARY_RULES.format(n=SUMMARY_MAX_WORDS)
                 + (_SPANISH if language(lang) == "es" else "")
                 + (f' Start with exactly these words: "{opener}"' if opener else "")
@@ -358,19 +410,22 @@ async def summarize(
     return text if len(text.split()) >= 4 else None
 
 
-def _cache_path(text: str) -> Path:
-    key = hashlib.sha1(f"{os.environ.get('REIGNS_VOICE_ID')}|{_model()}|{_speed()}|{_stability()}|{text}".encode())
+def _cache_path(text: str, vid: Optional[str] = None) -> Path:
+    vid = vid or os.environ.get("REIGNS_VOICE_ID")
+    key = hashlib.sha1(f"{vid}|{_model()}|{_speed()}|{_stability()}|{text}".encode())
     return CACHE_DIR / f"{key.hexdigest()}.mp3"
 
 
-async def synthesize(text: str) -> Optional[bytes]:
-    """MP3 bytes for `text`, from the disk cache or ElevenLabs. None if voice is off/fails."""
+async def synthesize(text: str, vid: Optional[str] = None) -> Optional[bytes]:
+    """MP3 bytes for `text` in voice `vid` (default: the horse's), from the disk cache or
+    ElevenLabs. None if voice is off/fails."""
     if not enabled() or not text:
         return None
-    path = _cache_path(text)
+    vid = vid or os.environ["REIGNS_VOICE_ID"]
+    path = _cache_path(text, vid)
     if path.exists():
         return path.read_bytes()
-    url = API_URL.format(voice_id=os.environ["REIGNS_VOICE_ID"])
+    url = API_URL.format(voice_id=vid)
     try:
         async with httpx.AsyncClient(timeout=TTS_TIMEOUT_S, transport=_transport) as client:
             resp = await client.post(
@@ -396,12 +451,13 @@ async def synthesize(text: str) -> Optional[bytes]:
     return resp.content
 
 
-def warm_lines() -> list[str]:
-    """Lines pre-generated at startup: common warnings + this style's praise and "fixed it"
-    in every language, so switching to Spanish is instant too."""
-    lines = list(COMMON_LINES)
+def warm_lines(p: Optional[str] = None) -> list[str]:
+    """Lines pre-generated at startup for one pet: (the horse's common warnings) + its praise and
+    "fixed it" in every language, so switching pet or language is instant too."""
+    p = p or style()
+    lines = list(COMMON_LINES) if p != "unicorn" else []
     for lang in LANGUAGES:
-        lines += PRAISE_BY_LANG[lang][style()] + [RECOVERED[(lang, style())]]
+        lines += PRAISE_BY_LANG[lang][p] + [RECOVERED[(lang, p)]]
     return list(dict.fromkeys(lines))
 
 
@@ -411,9 +467,10 @@ async def warm_cache() -> None:
         log.info("voice disabled (no ELEVENLABS_API_KEY / REIGNS_VOICE_ID)")
         return
     made = 0
-    for line in warm_lines():
+    jobs = [(line, voice_id(p)) for p in (style(), "unicorn") for line in warm_lines(p)]
+    for line, vid in jobs:
         try:
-            if not _cache_path(line).exists() and await synthesize(line):
+            if not _cache_path(line, vid).exists() and await synthesize(line, vid):
                 made += 1
         except Exception as exc:  # pragma: no cover - belt and braces
             log.warning("voice warm-up failed on %r: %s", line, exc)
@@ -441,19 +498,20 @@ async def maybe_speak(
     now: Optional[float] = None,
     clean: bool = False,
     lang: Optional[str] = None,
+    character: Optional[str] = None,
 ) -> Optional[VoicePlay]:
     """`clean`: this reply was checked (≥ 1 claim) and nothing in it was red or amber."""
     if not enabled():
         return None
     now = time.monotonic() if now is None else now
-    lang = language(lang)
-    opener = (pick_opener(state.recent_openers, lang)
-              if style() == "cowboy" or mode() == "full" else None)
-    text = line_for(prev_level, level, bubble, recovered, state.spoken_ids, opener, lang)
+    lang, p = language(lang), persona(character)
+    opener = (pick_opener(state.recent_openers, lang, p)
+              if p in ("cowboy", "unicorn") or mode() == "full" else None)
+    text = line_for(prev_level, level, bubble, recovered, state.spoken_ids, opener, lang, p)
     praising = False
     if (not text and clean and praise_enabled() and not recovered
             and now - state.last_praise >= PRAISE_GAP_S):
-        text, praising = pick_praise(state.recent_praise, lang), True
+        text, praising = pick_praise(state.recent_praise, lang, p), True
     if not text or now - state.last_spoken < MIN_GAP_S:
         return None
     prev_spoken, state.last_spoken = state.last_spoken, now  # hold the slot while we work
@@ -461,12 +519,12 @@ async def maybe_speak(
         state.last_praise = now
         log.info("voice: praising a clean reply")
     elif mode() == "full" and not recovered:
-        summary = await summarize(bubble, opener, lang)
+        summary = await summarize(bubble, opener, lang, p)
         log.info("voice: speaking %s (%d words)", "summary" if summary else "bubble text",
                  len((summary or text).split()))
         text = summary or text
     try:
-        audio = await synthesize(text)
+        audio = await synthesize(text, voice_id(p))
     except Exception as exc:
         log.error("voice failed: %s", exc)
         audio = None

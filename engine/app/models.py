@@ -101,6 +101,8 @@ class SessionStart(_Strict):
     chat_key: Optional[str] = None
     # Language the pet speaks: "en" (default) or "es". Unknown values fall back to English.
     language: Optional[str] = None
+    # Which pet is on screen: "charlie" (horse, default) or "marley" (unicorn) → voice + personality.
+    character: Optional[str] = None
 
 
 class MessageNew(_Strict):
@@ -277,6 +279,7 @@ class SessionContext(BaseModel):
     session_id: str
     app: str = "claude"
     language: str = "en"  # "en" | "es" — from session.start (or REIGNS_LANGUAGE); bubble/voice copy
+    character: str = "charlie"  # "charlie" (horse) | "marley" (unicorn) — from session.start
     messages: list[ChatMessage] = Field(default_factory=list)
     source_docs: dict[str, SourceDoc] = Field(default_factory=dict)
     claims: dict[str, Claim] = Field(default_factory=dict)

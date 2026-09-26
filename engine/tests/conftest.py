@@ -18,7 +18,8 @@ def _no_real_cloud_services(monkeypatch):
     loaded from .env. Tests that need a database set their own fake (see test_store.py)."""
     from app.learning import store
 
-    for key in ("MONGODB_URI", "ELEVENLABS_API_KEY", "REIGNS_LANGUAGE", "REIGNS_VOICE_PRAISE"):
+    for key in ("MONGODB_URI", "ELEVENLABS_API_KEY", "REIGNS_LANGUAGE", "REIGNS_VOICE_PRAISE",
+                "REIGNS_UNICORN_VOICE_ID"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(store, "_client", None)
     monkeypatch.setattr(store, "_db", None)

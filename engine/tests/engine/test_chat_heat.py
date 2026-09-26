@@ -101,7 +101,11 @@ async def test_session_start_language(tmp_path):
         s = Session("s", ledger)
         p = SessionStart(language="es")
         await s.handle(envelope("session.start", s.sid, p), p)
-        assert s.ctx.language == "es"
+        assert s.ctx.language == "es" and s.ctx.character == "charlie"
+        s3 = Session("s3", ledger)
+        p3 = SessionStart(character="Marley")
+        await s3.handle(envelope("session.start", s3.sid, p3), p3)
+        assert s3.ctx.character == "marley"
         s2 = Session("s2", ledger)
         p2 = SessionStart()
         await s2.handle(envelope("session.start", s2.sid, p2), p2)

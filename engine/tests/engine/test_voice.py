@@ -76,7 +76,8 @@ async def test_off_without_keys(monkeypatch):
 
 
 async def test_warm_cache_generates_common_lines(api):
-    n = len(voice.warm_lines())
+    n = len({(line, voice.voice_id(p)) for p in (voice.style(), "unicorn")
+             for line in voice.warm_lines(p)})
     assert "¡Arreglado!" in voice.warm_lines() and "Sin problemas." in voice.warm_lines()
     await voice.warm_cache()
     assert len(api.calls) == n
@@ -289,3 +290,41 @@ def test_language_defaults_and_env(monkeypatch):
     assert voice.language("es") == "es" and voice.language("ES-mx") == "es"
     monkeypatch.setenv("REIGNS_LANGUAGE", "es")
     assert voice.language(None) == "es"
+
+
+async def test_unicorn_has_its_own_personality_and_voice(api, monkeypatch):
+    from app import llm
+
+    seen = {}
+
+    async def fake(system, user, **kw):
+        seen["system"], seen["user"] = system, user
+        return "Oh my stars! Claude made up a paper and a broken link, so double-check those."
+
+    monkeypatch.setenv("REIGNS_UNICORN_VOICE_ID", "sparkly456")
+    monkeypatch.setattr(llm, "llm_available", lambda: True)
+    monkeypatch.setattr(llm, "complete_text", fake)
+    st = voice.VoiceState()
+    vp = await voice.maybe_speak(st, 0, 2, full_bubble(), False, now=0.0, character="Marley")
+    assert "Marley, a cheerful, sparkly unicorn" in seen["system"]
+    assert st.recent_openers[-1] in voice.OPENERS["unicorn"]
+    assert api.calls[-1].url.path == "/v1/text-to-speech/sparkly456"  # her own voice
+    assert vp.text.startswith("Oh my stars")
+    fix = await voice.maybe_speak(voice.VoiceState(), 2, 0, full_bubble(level=0), True, now=0.0,
+                                  character="marley", lang="es")
+    assert fix.text == "¡Yupi, todo arreglado! ¡Brillitos!"
+    calm = BubbleContent(level=0, headline="All clear")
+    praise = await voice.maybe_speak(voice.VoiceState(), 0, 0, calm, False, now=0.0, clean=True,
+                                     character="marley")
+    assert praise.text in voice.PRAISE_LINES["unicorn"]
+    # the horse is untouched: default character keeps the horse's voice
+    await voice.maybe_speak(voice.VoiceState(), 0, 0, calm, False, now=0.0, clean=True)
+    assert api.calls[-1].url.path == "/v1/text-to-speech/voice123"
+
+
+def test_unicorn_falls_back_to_the_horse_voice_id(monkeypatch):
+    monkeypatch.setenv("REIGNS_VOICE_ID", "horse1")
+    monkeypatch.delenv("REIGNS_UNICORN_VOICE_ID", raising=False)
+    assert voice.voice_id("unicorn") == "horse1"
+    assert voice.persona("Marley") == "unicorn" and voice.persona("charlie") == voice.style()
+    assert voice.persona(None) == voice.style()
