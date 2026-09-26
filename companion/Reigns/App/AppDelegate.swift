@@ -40,8 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         watcher = ConversationWatcher(reader: ConversationReader(rules: rules.conversation))
         watcher.onMessage = { [weak self] completed in self?.engine.sendMessage(completed) }
-        watcher.onConversationChange = { [weak self] in
-            self?.engine.startNewSession()
+        watcher.onConversationChange = { [weak self] chatKey in
+            self?.engine.startNewSession(chatKey: chatKey)
             self?.pet.resetForNewConversation()
         }
 

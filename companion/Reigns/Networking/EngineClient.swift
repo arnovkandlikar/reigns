@@ -27,6 +27,8 @@ final class EngineClient: NSObject {
 
     private var task: URLSessionWebSocketTask?
     private var sessionID = EngineClient.newSessionID()
+    /// The Claude chat this session watches (sent in session.start so its heat is restored).
+    private var chatKey: String?
     private var status = Status.offline
     private var attempt = 0
     private var reconnectWork: DispatchWorkItem?
@@ -53,9 +55,11 @@ final class EngineClient: NSObject {
     }
 
     /// New conversation → new engine session on a fresh connection. Queued messages belong to the
-    /// old conversation, so they're dropped.
-    func startNewSession() {
+    /// old conversation, so they're dropped. `chatKey` identifies the chat so the engine can put
+    /// back its saved heat (nil for a chat we can't identify yet).
+    func startNewSession(chatKey: String? = nil) {
         sessionID = Self.newSessionID()
+        self.chatKey = chatKey
         queue.removeAll()
         Log.net.info("New engine session \(self.sessionID, privacy: .public)")
         guard isRunning else { return }
@@ -131,7 +135,7 @@ final class EngineClient: NSObject {
         let bundle = Bundle.main.infoDictionary
         let companion = bundle?["CFBundleShortVersionString"] as? String ?? "1.0"
         if let hello = encode("session.start", SessionStartPayload(
-            appVersion: claudeVersion(), companionVersion: companion)) {
+            appVersion: claudeVersion(), companionVersion: companion, chatKey: chatKey)) {
             transmit(hello, on: task)
         }
         let pending = queue

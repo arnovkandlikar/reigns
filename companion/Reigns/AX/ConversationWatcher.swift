@@ -17,8 +17,9 @@ struct CompletedMessage {
 final class ConversationWatcher: @unchecked Sendable {
     /// Called on the main thread, in conversation order.
     var onMessage: (@MainActor (CompletedMessage) -> Void)?
-    /// Called on the main thread when the user moves to a different conversation (new engine session).
-    var onConversationChange: (@MainActor () -> Void)?
+    /// Called on the main thread when the user moves to a different conversation (new engine session),
+    /// with that chat's key (message_id of its first message) when it's on screen.
+    var onConversationChange: (@MainActor (String?) -> Void)?
 
     private static let stableAfter: TimeInterval = 1.5
     private static let minPollInterval: TimeInterval = 0.5
@@ -114,7 +115,10 @@ final class ConversationWatcher: @unchecked Sendable {
             resetConversation()
             hasSeenConversation = true
             title = snapshot.title
-            if wasSwitch { notifyConversationChange() }
+            let chatKey = Self.chatKey(messages)
+            // First chat seen after launch: also restart the session if we know which chat it is,
+            // so its saved heat comes back.
+            if wasSwitch || chatKey != nil { notifyConversationChange(chatKey: chatKey) }
             // A genuinely new chat stayed empty for a while and starts at message 0.
             let isNewChat = sawEmptyChat && messages.contains { $0.position == 0 }
             sawEmptyChat = false
@@ -211,11 +215,17 @@ final class ConversationWatcher: @unchecked Sendable {
         sentIDs = []
     }
 
-    private func notifyConversationChange() {
+    private func notifyConversationChange(chatKey: String?) {
         Log.ax.info("Conversation changed")
         DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated { self?.onConversationChange?() }
+            MainActor.assumeIsolated { self?.onConversationChange?(chatKey) }
         }
+    }
+
+    /// Stable id for a chat: the message_id its first message has (or had) when sent to the engine.
+    static func chatKey(_ messages: [ChatMessage]) -> String? {
+        guard let first = messages.first(where: { $0.position == 0 }) else { return nil }
+        return messageID(position: 0, text: first.text)
     }
 
     static func messageID(position: Int, text: String) -> String {

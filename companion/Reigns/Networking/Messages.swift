@@ -190,11 +190,15 @@ struct SessionStartPayload: Encodable {
     var app = "claude"
     var appVersion: String
     var companionVersion: String
+    /// message_id of the chat's first message (position 0), so the engine can restore that chat's
+    /// heat when the user flips back to it. Left out of the JSON when unknown.
+    var chatKey: String?
 
     private enum CodingKeys: String, CodingKey {
         case app
         case appVersion = "app_version"
         case companionVersion = "companion_version"
+        case chatKey = "chat_key"
     }
 }
 
