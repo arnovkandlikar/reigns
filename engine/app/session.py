@@ -279,18 +279,23 @@ class Session:
         prev_level = self.heat.displayed_level
         self.heat.add_claims(heat_items, now)
         self._check_fix(claims, verdicts, now)
-        level = self.heat.target_level(now)
+        level = self.heat.show_now(now)  # the horse reacts now, not 2 s later
         self.ctx.heat, self.ctx.level = self.heat.heat, level
 
-        bubble = await plugins.build_bubble(level, self.ctx)
-        await self._record_correction(bubble)
-
+        # Verdicts + heat go out right away; the bubble (Course Correct, up to 4 s) follows.
         out = [
             envelope("verdicts.update", self.sid,
                      VerdictsUpdate(message_id=msg.message_id, claims=verdicts)),
             self._heat_env(),
-            envelope("bubble.content", self.sid, bubble),
         ]
+        if self.voice_sink:  # live WebSocket: push them now instead of returning them later
+            for env in out:
+                await self.voice_sink(env)
+            out = []
+
+        bubble = await plugins.build_bubble(level, self.ctx)
+        await self._record_correction(bubble)
+        out.append(envelope("bubble.content", self.sid, bubble))
         await self.ledger.message_heat(self.sid, msg.message_id, self.heat.heat)
         if self.chat_key:
             await self.ledger.save_chat_bubble(self.chat_key, bubble.model_dump_json())
