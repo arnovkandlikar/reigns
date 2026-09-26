@@ -1,0 +1,326 @@
+"""Tests for the Reference Auditor (FR-C1). Owner: Role C.
+
+All HTTP is mocked with httpx.MockTransport, so these run offline in < 1 s. The fake API
+responses copy the real Crossref / Semantic Scholar JSON shapes.
+
+Live test against the real APIs (needs internet):
+    REIGNS_LIVE=1 pytest tests/detectors/test_reference_auditor.py -k live -s
+"""
+
+from __future__ import annotations
+
+import os
+
+import httpx
+import pytest
+
+from app.detectors.reference_auditor import (
+    ReferenceAuditor,
+    parse_packages,
+    parse_paper,
+    parse_url,
+)
+from app.models import Claim, SessionContext
+
+# --------------------------------------------------------------------------- fake API data
+VASWANI_CR = {
+    "DOI": "10.5555/3295222.3295349",
+    "title": ["Attention is all you need"],
+    "author": [{"given": "Ashish", "family": "Vaswani"}, {"given": "Noam", "family": "Shazeer"}],
+    "issued": {"date-parts": [[2017, 12, 4]]},
+}
+UNRELATED_CR = [
+    {
+        "DOI": "10.1000/bees1",
+        "title": ["Honey bee colony losses in the United States"],
+        "author": [{"given": "K.", "family": "Kulhanek"}],
+        "issued": {"date-parts": [[2017]]},
+    },
+    {
+        "DOI": "10.1000/ts2",
+        "title": ["Temporal Fusion Transformers for interpretable multi-horizon forecasting"],
+        "author": [{"given": "Bryan", "family": "Lim"}],
+        "issued": {"date-parts": [[2021]]},
+    },
+]
+VASWANI_S2 = {
+    "paperId": "204e3073870fae3d05bcbc2f6a8e263d9b72e776",
+    "title": "Attention is All you Need",
+    "year": 2017,
+    "authors": [
+        {"authorId": "1", "name": "Ashish Vaswani"},
+        {"authorId": "2", "name": "Noam M. Shazeer"},
+    ],
+    "externalIds": {"ArXiv": "1706.03762"},
+    "url": "https://www.semanticscholar.org/paper/204e3073",
+}
+UNRELATED_S2 = {
+    "paperId": "x",
+    "title": "Deep learning for beehive monitoring: a review",
+    "year": 2022,
+    "authors": [{"name": "A. Researcher"}],
+    "externalIds": {},
+    "url": "https://www.semanticscholar.org/paper/x",
+}
+
+
+def api_handler(request: httpx.Request) -> httpx.Response:
+    """Pretend to be Crossref, Semantic Scholar, PyPI, npm and a couple of websites."""
+    host, path = request.url.host, request.url.path
+    if host == "api.crossref.org":
+        q = request.url.params.get("query.bibliographic", "").lower()
+        items = [VASWANI_CR] if "attention is all you need" in q else UNRELATED_CR
+        return httpx.Response(200, json={"status": "ok", "message": {"items": items}})
+    if host == "api.semanticscholar.org":
+        q = request.url.params.get("query", "").lower()
+        data = [VASWANI_S2] if "attention is all you need" in q else [UNRELATED_S2]
+        return httpx.Response(200, json={"total": len(data), "offset": 0, "data": data})
+    if host == "pypi.org":
+        return httpx.Response(200 if path in ("/pypi/requests/json", "/pypi/fastapi/json") else 404)
+    if host == "registry.npmjs.org":
+        raw = request.url.raw_path.decode()
+        return httpx.Response(200 if raw in ("/lodash", "/@types%2Fnode") else 404)
+    if host == "docs.python.org":
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text="<html><p>The <b>asyncio</b> module is a library to write concurrent code "
+            "using the async/await syntax.</p></html>",
+        )
+    if host == "example.com":
+        return httpx.Response(404)
+    if host == "no-such-site-xyz.dev":
+        raise httpx.ConnectError("[Errno -2] Name or service not known", request=request)
+    return httpx.Response(500)
+
+
+def claim(type_: str, quote: str, normalized: str = "", context: str = "") -> Claim:
+    return Claim(
+        claim_id="c1",
+        message_id="m1",
+        quote=quote,
+        normalized=normalized or quote,
+        type=type_,
+        risk="high",
+        context=context,
+    )
+
+
+@pytest.fixture
+def auditor() -> ReferenceAuditor:
+    return ReferenceAuditor(transport=httpx.MockTransport(api_handler))
+
+
+@pytest.fixture
+def session() -> SessionContext:
+    return SessionContext(session_id="t")
+
+
+# --------------------------------------------------------------------------- parsing
+def test_parse_paper_from_fixture_shape():
+    ref = parse_paper(
+        claim(
+            "paper",
+            'Moreau, Tanaka & Silva (2021), "HiveFormer: Attention-Based Acoustic Monitoring of Beehives"',
+        )
+    )
+    assert ref.title == "HiveFormer: Attention-Based Acoustic Monitoring of Beehives"
+    assert ref.surnames == ["Moreau", "Tanaka", "Silva"]
+    assert ref.year == 2021
+
+
+def test_parse_paper_et_al_and_normalized_fallback():
+    ref = parse_paper(
+        claim(
+            "paper",
+            "Okafor et al. (2023)",
+            "The paper 'Predicting Colony Collapse Disorder' exists.",
+        )
+    )
+    assert ref.title == "Predicting Colony Collapse Disorder"
+    assert ref.surnames == ["Okafor"]
+    assert ref.year == 2023
+
+
+def test_parse_url_and_packages():
+    assert parse_url(claim("url", "See https://docs.python.org/3/library/asyncio.html.")) == (
+        "https://docs.python.org/3/library/asyncio.html"
+    )
+    assert parse_packages(claim("package", "pip install fastapi-ratelimiter==0.3 requests")) == (
+        ["fastapi-ratelimiter", "requests"],
+        "pypi",
+    )
+    assert parse_packages(claim("package", "pip install -U httpx to fetch pages")) == (
+        ["httpx"],
+        "pypi",
+    )
+    assert parse_packages(claim("package", "Run `npm i @types/node@20`")) == (
+        ["@types/node"],
+        "npm",
+    )
+
+
+# --------------------------------------------------------------------------- fixture scenario
+async def test_fake_citation_scenario_matches_expected(load_scenario, auditor, session):
+    sc = load_scenario("fake_citation")
+    expected = sc["expected"]["detector_results"]
+    for raw in sc["expected"]["claims"]:
+        c = Claim(**raw)
+        want = [r for r in expected.get(c.claim_id, []) if r["detector"] == "reference_auditor"]
+        if not want:
+            continue
+        got = await auditor.check(c, session)
+        assert got.status == want[0]["status"], (c.quote, got.explanation)
+        assert got.evidence, "every verdict must carry evidence"
+
+
+async def test_fake_paper_evidence_names_both_sources(auditor, session):
+    c = claim(
+        "paper", 'Lee & Park (2022), "Transformer Models for Honeybee Colony Collapse Forecasting"'
+    )
+    r = await auditor.check(c, session)
+    assert r.status == "contradicted" and r.confidence >= 0.9
+    assert {e.source for e in r.evidence} == {"Crossref", "Semantic Scholar"}
+
+
+async def test_real_title_wrong_authors_is_only_unverified(auditor, session):
+    c = claim("paper", 'Smith & Jones (2017), "Attention Is All You Need"')
+    r = await auditor.check(c, session)
+    assert r.status == "unverified"  # mis-cited, not invented → amber, never red (§8.4)
+    assert "authors" in r.explanation
+
+
+async def test_real_title_wrong_year(auditor, session):
+    r = await auditor.check(
+        claim("paper", 'Vaswani et al. (2012), "Attention Is All You Need"'), session
+    )
+    assert r.status == "unverified" and "year" in r.explanation
+
+
+async def test_both_apis_down_is_error_not_contradicted(session):
+    down = ReferenceAuditor(transport=httpx.MockTransport(lambda req: httpx.Response(503)))
+    r = await down.check(claim("paper", 'Lee (2022), "Some Paper That May Exist"'), session)
+    assert r.status == "error"  # never flag a paper as fake when we couldn't look it up
+
+
+async def test_one_api_down_still_decides(session):
+    def handler(req):
+        if req.url.host == "api.semanticscholar.org":
+            return httpx.Response(429)
+        return api_handler(req)
+
+    r = await ReferenceAuditor(transport=httpx.MockTransport(handler)).check(
+        claim(
+            "paper",
+            'Lee & Park (2022), "Transformer Models for Honeybee Colony Collapse Forecasting"',
+        ),
+        session,
+    )
+    assert r.status == "contradicted" and r.confidence < 0.95  # one source → a bit less sure
+
+
+async def test_lookups_are_cached(session):
+    calls = []
+
+    def counting(req):
+        calls.append(req.url.host)
+        return api_handler(req)
+
+    a = ReferenceAuditor(transport=httpx.MockTransport(counting))
+    c = claim("paper", 'Vaswani et al. (2017), "Attention Is All You Need"')
+    await a.check(c, session)
+    await a.check(c, session)
+    assert len(calls) == 2  # one Crossref + one S2, second check served from session.cache
+
+
+# --------------------------------------------------------------------------- URLs
+async def test_url_404_is_contradicted(auditor, session):
+    r = await auditor.check(claim("url", "Docs: https://example.com/api/v9/limits"), session)
+    assert r.status == "contradicted" and "404" in r.explanation
+
+
+async def test_url_dns_failure_is_contradicted(auditor, session):
+    r = await auditor.check(claim("url", "https://no-such-site-xyz.dev/paper"), session)
+    assert r.status == "contradicted" and "doesn't exist" in r.explanation
+
+
+async def test_url_with_quote_found_on_page(auditor, session):
+    c = claim(
+        "url",
+        'https://docs.python.org/3/library/asyncio.html says "a library to write '
+        'concurrent code using the async/await syntax"',
+    )
+    r = await auditor.check(c, session)
+    assert r.status == "supported"
+
+
+async def test_url_with_quote_missing_from_page(auditor, session):
+    c = claim(
+        "url",
+        'https://docs.python.org/3/library/asyncio.html says "asyncio was removed '
+        'in Python 3.12"',
+    )
+    r = await auditor.check(c, session)
+    assert r.status == "unverified"
+
+
+async def test_url_server_error_is_not_contradicted(auditor, session):
+    r = await auditor.check(claim("url", "https://flaky.org/page"), session)
+    assert r.status == "unverified"
+
+
+async def test_localhost_url_is_never_fetched(session):
+    def explode(req):
+        raise AssertionError("must not fetch private hosts")
+
+    a = ReferenceAuditor(transport=httpx.MockTransport(explode))
+    r = await a.check(claim("url", "http://127.0.0.1:8765/debug/status"), session)
+    assert r.status == "unverified"
+
+
+# --------------------------------------------------------------------------- packages
+async def test_fake_pypi_package(auditor, session):
+    r = await auditor.check(claim("package", "pip install fastapi-ratelimiter"), session)
+    assert r.status == "contradicted" and "PyPI" in r.explanation
+
+
+async def test_real_pypi_package(auditor, session):
+    r = await auditor.check(claim("package", "Install it with `pip install requests`."), session)
+    assert r.status == "supported"
+
+
+async def test_npm_scoped_package(auditor, session):
+    r = await auditor.check(claim("package", "npm install @types/node"), session)
+    assert r.status == "supported"
+
+
+async def test_fake_npm_package(auditor, session):
+    r = await auditor.check(
+        claim(
+            "package",
+            "Use the `react-super-hooks-pro` package",
+            context="How do I do this in JavaScript?",
+        ),
+        session,
+    )
+    assert r.status == "contradicted" and "npm" in r.explanation
+
+
+async def test_non_reference_claim_is_ignored(auditor, session):
+    r = await auditor.check(claim("fact", "The Eiffel Tower is in Paris."), session)
+    assert r.status == "unverified" and r.confidence == 0.0
+
+
+# --------------------------------------------------------------------------- live (opt-in)
+@pytest.mark.skipif(
+    os.environ.get("REIGNS_LIVE") != "1", reason="set REIGNS_LIVE=1 to hit real APIs"
+)
+async def test_live_fixture_scenario(load_scenario):
+    sc = load_scenario("fake_citation")
+    live, session = ReferenceAuditor(), SessionContext(session_id="live")
+    for raw in sc["expected"]["claims"]:
+        r = await live.check(Claim(**raw), session)
+        print(f"\n{r.status:13} {r.confidence:.2f} {r.latency_ms:5}ms  {raw['quote'][:70]}")
+        print(f"              {r.explanation}")
+        for e in r.evidence:
+            print(f"              [{e.source}] {e.snippet}")
