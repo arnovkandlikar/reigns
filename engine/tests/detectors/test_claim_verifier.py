@@ -61,18 +61,19 @@ def web_handler(request: httpx.Request) -> httpx.Response:
             )
         return httpx.Response(200, json={"results": []})
     if host == "en.wikipedia.org" and request.url.path == "/w/api.php":
-        q = request.url.params.get("srsearch", "").lower()
-        if "eiffel" in q:
-            hits = [{"title": "Eiffel Tower", "snippet": "<span>Eiffel</span> Tower ... 1889"}]
-        elif "water boils" in q:
-            hits = [{"title": "Boiling point", "snippet": BOILING}]
-        else:
-            hits = []
-        return httpx.Response(200, json={"query": {"search": hits}})
-    if host == "en.wikipedia.org" and "/page/summary/" in request.url.path:
-        if "Eiffel" in request.url.path:
-            return httpx.Response(200, json={"extract": EIFFEL_SUMMARY})
-        return httpx.Response(200, json={"extract": BOILING})
+        params = request.url.params
+        if params.get("list") == "search":
+            q = params.get("srsearch", "").lower()
+            if "eiffel" in q:
+                hits = [{"title": "Eiffel Tower"}]
+            elif "water" in q:
+                hits = [{"title": "Boiling point"}]
+            else:
+                hits = []
+            return httpx.Response(200, json={"query": {"search": hits}})
+        if params.get("prop") == "extracts":
+            text = EIFFEL_SUMMARY if "Eiffel" in params.get("titles", "") else BOILING
+            return httpx.Response(200, json={"query": {"pages": {"1": {"extract": text}}}})
     return httpx.Response(404)
 
 
@@ -117,7 +118,14 @@ GOOD_ANSWERS = {
 
 
 @pytest.fixture(autouse=True)
-def tavily_key(monkeypatch):
+def tavily_key(monkeypatch, request):
+    """Offline tests get a fake search key so they never touch the real Tavily.
+
+    Live tests (test_live_*) must keep the real key from .env — overriding it there made Tavily
+    answer 401 even though the key itself was fine.
+    """
+    if request.node.name.startswith("test_live"):
+        return
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
 
@@ -211,6 +219,34 @@ async def test_low_confidence_verdict_becomes_unverified(session):
     assert r.status == "unverified"
 
 
+async def test_weak_contradiction_is_not_red(session):
+    """Live run: judge gave 0.70 'contradicted' from an inference (a birth year). Must be amber."""
+    inferred = fake_judge({"1899": {**GOOD_ANSWERS["1899"], "confidence": 0.7}})
+    r = await verifier(inferred).check(claim("The Eiffel Tower was completed in 1899."), session)
+    assert r.status == "unverified"
+
+
+def test_judge_is_told_not_to_infer_contradictions():
+    from app.detectors.claim_verifier import JUDGE_SYSTEM
+
+    assert "DIRECTLY" in JUDGE_SYSTEM and "indirect" in JUDGE_SYSTEM
+
+
+async def test_unverified_shows_no_unrelated_evidence(session):
+    unsure = fake_judge(
+        {
+            "1899": {
+                "verdict": "unverified",
+                "confidence": 0.5,
+                "quote": "",
+                "explanation": "The snippets don't settle this.",
+            }
+        }
+    )
+    r = await verifier(unsure).check(claim("The Eiffel Tower was completed in 1899."), session)
+    assert r.status == "unverified" and r.evidence == []
+
+
 async def test_garbage_judge_output_is_safe(session):
     weird = fake_judge({"1899": {"verdict": "DEFINITELY FAKE", "confidence": "high"}})
     r = await verifier(weird).check(claim("The Eiffel Tower was completed in 1899."), session)
@@ -292,3 +328,22 @@ async def test_live_scenarios(load_scenario):
             print(f"              {r.explanation}")
             for e in r.evidence[:1]:
                 print(f"              [{e.source}] {e.snippet[:120]}")
+
+
+@pytest.mark.skipif(os.environ.get("REIGNS_LIVE") != "1", reason="set REIGNS_LIVE=1")
+async def test_live_sources_diagnostic():
+    """Shows what each evidence source returns, or its exact error. Use when results look off."""
+    import asyncio
+
+    v = ClaimVerifier()
+    print("\nTAVILY_API_KEY:", "set" if os.environ.get("TAVILY_API_KEY") else "MISSING")
+    for q in ("The Eiffel Tower is about 330 metres tall.", "Water boils at 100 °C at sea level."):
+        web, wiki = await asyncio.gather(v._web_search(q), v._wikipedia(q), return_exceptions=True)
+        print(f"\nQUERY: {q}")
+        for name, part in (("web search", web), ("Wikipedia", wiki)):
+            if isinstance(part, BaseException):
+                print(f"  {name}: FAILED → {part!r}")
+            else:
+                print(f"  {name}: {len(part)} snippets")
+                for sn in part[:3]:
+                    print(f"      [{sn.source}] {sn.text[:110]}")

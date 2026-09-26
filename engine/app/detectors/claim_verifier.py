@@ -22,6 +22,7 @@ Hard rules (FR-C2):
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from collections.abc import Awaitable, Callable
@@ -32,22 +33,34 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.detectors.base import BaseDetector, http_client, normalize_text, snippet
+from app.detectors.base import (
+    BaseDetector,
+    content_words,
+    http_client,
+    normalize_text,
+    snippet,
+)
 from app.llm import complete_json
 from app.models import Claim, DetectorResult, Evidence, SessionContext
 
+log = logging.getLogger("reigns.detectors.claim_verifier")
+
 TAVILY_URL = "https://api.tavily.com/search"
 BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
-WIKI_SEARCH_URL = "https://en.wikipedia.org/w/api.php"
-WIKI_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary/{title}"
+WIKI_API_URL = "https://en.wikipedia.org/w/api.php"
 
 SEARCH_RESULTS = 5  # FR-C2: 5 results
-WIKI_ARTICLES = 2  # summaries fetched for the top Wikipedia hits
+WIKI_ARTICLES = 2  # top Wikipedia articles read in full
+WIKI_SENTENCES = 3  # best-matching sentences kept per article (+ the first 2)
 SNIPPET_CHARS = 700  # per snippet sent to the judge — enough context, bounded cost
-MAX_SNIPPETS = 8
+MAX_SNIPPETS = 14  # 2 articles × ≤5 sentences + web results
 
 # Minimum judge confidence before we let a verdict stand as supported/contradicted.
 MIN_DECISIVE_CONFIDENCE = 0.6
+# "contradicted" turns the pet red, so it needs more: live testing showed the judge giving 0.70
+# to an inference ("he was born in 1854, so he can't have been mayor in 1866") — maybe a
+# different person with the same name. Real contradictions (1899 vs 1889) score ~0.99.
+MIN_CONTRADICT_CONFIDENCE = 0.8
 
 
 @dataclass
@@ -70,6 +83,10 @@ Rules:
 - "quote" MUST be copied character-for-character from ONE snippet, and must be the sentence
   or phrase that proves your verdict. For "unverified" use "".
 - "evidence_index" is the number of the snippet you quoted (null for "unverified").
+- "contradicted" ONLY when a snippet DIRECTLY states a conflicting fact about the SAME
+  subject. Do not reason from indirect facts (birth dates, related events, "so it couldn't
+  have …"), and be careful with people who may merely share a name. If you have to infer,
+  answer "unverified".
 - Small rounding or phrasing differences ("about 330 m" vs "330 metres") are NOT
   contradictions. Different years, names or clearly different numbers ARE.
 - "explanation" is one short plain-English sentence for a non-expert, e.g.
@@ -117,6 +134,9 @@ class ClaimVerifier(BaseDetector):
         web, wiki = await asyncio.gather(
             self._web_search(query), self._wikipedia(query), return_exceptions=True
         )
+        for name, part in (("web search", web), ("Wikipedia", wiki)):
+            if isinstance(part, BaseException):
+                log.warning("claim_verifier: %s failed: %r", name, part)
         snippets: list[Snippet] = []
         # Wikipedia first: the most reliable source for the judge to lean on.
         for part in (wiki, web):
@@ -126,11 +146,11 @@ class ClaimVerifier(BaseDetector):
             # Both sources errored (network down / bad key) → let check() report status "error"
             # instead of a misleading "no sources found".
             raise ConnectionError(f"all evidence sources failed: {web!r}; {wiki!r}")
-        # de-duplicate by URL, keep order, cap
+        # de-duplicate identical snippets, keep order, cap
         seen: set[str] = set()
         unique = []
         for s in snippets:
-            key = s.url or s.text[:80]
+            key = f"{s.url}|{normalize_text(s.text)}"  # same article can give several sentences
             if key not in seen and s.text.strip():
                 seen.add(key)
                 unique.append(s)
@@ -179,14 +199,21 @@ class ClaimVerifier(BaseDetector):
         ]
 
     async def _wikipedia(self, query: str) -> list[Snippet]:
-        """Find the best articles with MediaWiki search, then fetch their REST summaries."""
+        """Find the best articles, read them in full, keep the sentences that match the claim.
+
+        Why not just the REST summary (the article intro)? Live testing showed the intro often
+        lacks the fact: the Eiffel Tower intro doesn't mention its height, so a correct
+        "330 metres" claim came back unverified. Reading the whole article and picking the
+        sentences that best match the claim fixes that at the cost of one extra request.
+        """
         async with self._client() as client:
             resp = await client.get(
-                WIKI_SEARCH_URL,
+                WIKI_API_URL,
                 params={
                     "action": "query",
                     "list": "search",
-                    "srsearch": query,
+                    # MediaWiki search wants keywords; a full sentence finds almost nothing.
+                    "srsearch": wiki_keywords(query),
                     "srlimit": WIKI_ARTICLES,
                     "format": "json",
                 },
@@ -194,23 +221,28 @@ class ClaimVerifier(BaseDetector):
             resp.raise_for_status()
             hits = resp.json().get("query", {}).get("search", [])
 
-            async def summary(hit: dict[str, Any]) -> list[Snippet]:
-                title = hit["title"]
-                url = f"https://en.wikipedia.org/wiki/{urlquote(title.replace(' ', '_'))}"
-                out = []
+            async def best_sentences(title: str) -> list[Snippet]:
                 r = await client.get(
-                    WIKI_SUMMARY_URL.format(title=urlquote(title.replace(" ", "_"), safe=""))
+                    WIKI_API_URL,
+                    params={
+                        "action": "query",
+                        "prop": "extracts",
+                        "explaintext": 1,
+                        "titles": title,
+                        "format": "json",
+                        "redirects": 1,
+                    },
                 )
-                if r.status_code == 200 and r.json().get("extract"):
-                    out.append(Snippet("Wikipedia", url, r.json()["extract"]))
-                # The search snippet is the passage that matched the query — often exactly the
-                # sentence with the fact, even when the summary doesn't mention it.
-                if hit.get("snippet"):
-                    out.append(Snippet("Wikipedia", url, _strip_html(hit["snippet"])))
-                return out
+                r.raise_for_status()
+                pages = r.json().get("query", {}).get("pages", {})
+                text = next((pg.get("extract", "") for pg in pages.values()), "")
+                url = f"https://en.wikipedia.org/wiki/{urlquote(title.replace(' ', '_'))}"
+                return [Snippet("Wikipedia", url, sent) for sent in pick_sentences(text, query)]
 
-            parts = await asyncio.gather(*(summary(h) for h in hits), return_exceptions=True)
-        return [s for p in parts if isinstance(p, list) for s in p]
+            parts = await asyncio.gather(
+                *(best_sentences(h["title"]) for h in hits), return_exceptions=True
+            )
+        return [sn for p in parts if isinstance(p, list) for sn in p]
 
     # ------------------------------------------------------------------ judge
     async def _judge(self, claim: Claim, snippets: list[Snippet]) -> dict[str, Any]:
@@ -238,14 +270,12 @@ class ClaimVerifier(BaseDetector):
         quote = str(data.get("quote") or "").strip()
 
         if verdict == "unverified":
+            # No evidence attached: nothing relevant was found, and showing a random snippet
+            # (live run: an unrelated news sentence) in the Details panel would only confuse.
             return self.result(
                 "unverified",
                 min(confidence, 0.6),
                 explanation or "The sources found don't confirm or deny this.",
-                [
-                    Evidence(source=s.source, url=s.url, snippet=snippet(s.text, 200))
-                    for s in snippets[:2]
-                ],
             )
 
         # supported / contradicted: the quote must really be in the cited snippet.
@@ -267,7 +297,8 @@ class ClaimVerifier(BaseDetector):
             source = snippets[0]
             quote = snippet(source.text, 200)
 
-        if confidence < MIN_DECISIVE_CONFIDENCE:
+        needed = MIN_CONTRADICT_CONFIDENCE if verdict == "contradicted" else MIN_DECISIVE_CONFIDENCE
+        if confidence < needed:
             return self.result(
                 "unverified",
                 confidence,
@@ -303,6 +334,98 @@ def _locate_quote(quote: str, snippets: list[Snippet], index: Any) -> Snippet | 
         if want in normalize_text(s.text):
             return s
     return None
+
+
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])|\n+")
+
+
+def wiki_keywords(claim_text: str, max_words: int = 6) -> str:
+    """'The Eiffel Tower was completed in 1899.' → 'Eiffel Tower completed'.
+
+    Drops stopwords and numbers (a wrong number in the claim must not stop us finding the
+    right article) and keeps the first few meaningful words, which usually name the subject.
+    """
+    words = [
+        w
+        for w in re.findall(r"[^\W\d_][\w'’-]*", claim_text)
+        if len(w) > 1 and w.lower() not in _QUERY_STOP
+    ]
+    return " ".join(words[:max_words]) or claim_text
+
+
+_QUERY_STOP = {
+    "the",
+    "a",
+    "an",
+    "of",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "by",
+    "with",
+    "and",
+    "or",
+    "is",
+    "was",
+    "were",
+    "are",
+    "be",
+    "been",
+    "it",
+    "its",
+    "that",
+    "this",
+    "about",
+    "approximately",
+    "around",
+    "including",
+    "who",
+    "which",
+    "took",
+    "has",
+    "had",
+    "have",
+    "than",
+    "as",
+    "from",
+}
+
+
+def pick_sentences(
+    text: str, claim_text: str, k: int = WIKI_SENTENCES, intro: int = 2
+) -> list[str]:
+    """The article's first `intro` sentences + the k that best match the claim (article order).
+
+    - The intro is always kept: it holds the key facts (dates, places, sizes) and is where a
+      contradiction usually lives — e.g. "Constructed from 1887 to 1889" for a claim saying
+      1899 shares no number with the claim, so pure matching would drop it.
+    - Score = shared meaningful words
+            + 3 per number the claim mentions that the sentence also has   (supports)
+            + 1 per claim number with a same-length number in the sentence (1899 ↔ 1889:
+              the kind of sentence that can contradict it)
+    """
+    want_words = content_words(claim_text)
+    want_numbers = set(_NUMBER.findall(claim_text))
+    want_lengths = {len(n) for n in want_numbers}
+    sentences = [s.strip() for s in _SENTENCE_SPLIT.split(text) if len(s.strip()) > 20]
+    chosen = set(range(min(intro, len(sentences))))
+    scored = []
+    for i, sent in enumerate(sentences):
+        if i in chosen:
+            continue
+        numbers = set(_NUMBER.findall(sent))
+        score = (
+            len(want_words & content_words(sent))
+            + 3 * len(want_numbers & numbers)
+            + len(want_lengths & {len(n) for n in numbers - want_numbers})
+        )
+        if score:
+            scored.append((score, i))
+    chosen |= {i for _, i in sorted(scored, key=lambda t: (-t[0], t[1]))[:k]}
+    return [sentences[i] for i in sorted(chosen)]
 
 
 _TAGS = re.compile(r"<[^>]+>")
