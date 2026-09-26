@@ -84,6 +84,39 @@ async def test_genuine_counter_source_handoff_contains_original_question(honeybe
     assert "Later claims appear to rely" not in bubble.correction.text
 
 
+@pytest.mark.parametrize("prompt_case", ["inserted_template", "missing_record", "inserted_short"])
+async def test_fresh_start_after_inserted_fix_uses_original_user_question(
+    honeybee_session, prompt_case: str
+) -> None:
+    session, data = honeybee_session
+    verdict = session.verdicts["anwar"]
+    verdict.detector_results[0].evidence = [Evidence(
+        source="Publisher", url="https://example.org/counter-record",
+        snippet="The DOI identifies a different article by different authors.",
+    )]
+    session.verdicts.pop("ngo")
+    session.claims.pop("ngo")
+    profile = await api.diagnose(session)
+    fix_text = api._correction_text(2, profile, [verdict], session, "v3")
+    if prompt_case == "inserted_short":
+        fix_text = "Can you verify whether the Anwar DOI is correct?"
+    if prompt_case != "missing_record":
+        session.corrections.append(CorrectionRecord(
+            correction_id="fix-1", prompt_type="targeted_correction", level=2,
+            text=fix_text, inserted=True, target_claim_ids=["anwar"],
+        ))
+    session.messages.extend([
+        ChatMessage(message_id="fix-paste", role="user", text=fix_text, position=2),
+        ChatMessage(message_id="next-reply", role="assistant", text="The citation still needs checking.", position=3),
+    ])
+
+    bubble = await api.build_bubble(4, profile, session)
+
+    assert bubble.correction and bubble.correction.prompt_type == "fresh_start"
+    assert f"- Original question: {data['question']}\n" in bubble.correction.text
+    assert "- Original question: Quick checklist" not in bubble.correction.text
+
+
 async def test_missing_chat_document_never_claims_source_excerpts_were_checked() -> None:
     claim = Claim(
         claim_id="summary", message_id="reply", quote="The report lists 35 jobs.",
