@@ -10,6 +10,9 @@ the ElevenLabs Voice Library in REIGNS_VOICE_ID.
 Delivery: REIGNS_VOICE_SPEED (0.7–1.2, default 1.2) and REIGNS_VOICE_STABILITY (0–1, default
 0.35; lower = more expressive) are ElevenLabs' own settings, so no pitch change.
 A verified fix → "Yeehaw, fixed it, partner!" / "Fixed it!". At most one line per 20 s.
+Variety: each warning opens with a different greeting (never the same one twice in a row), and a
+clean reply that was actually checked gets a short, varied "good job" (REIGNS_VOICE_PRAISE=0 to
+turn off; at most one per PRAISE_GAP_S).
 
 Speed: every line is cached on disk (engine/.voice_cache/, git-ignored) and ~20 common lines
 are pre-generated at startup, so the usual lines play instantly.
@@ -24,7 +27,9 @@ import base64
 import hashlib
 import logging
 import os
+import random
 import re
+from collections import deque
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -75,6 +80,35 @@ COMMON_LINES = [
     "Let's double-check that.",
 ]
 
+# Openers for warnings: the summary must start with one, so the horse doesn't say the same
+# greeting every time. Recently used ones are skipped.
+OPENERS = {
+    "cowboy": [
+        "Whoa there, partner.", "Hold your horses.", "Easy now.", "Well, shoot.",
+        "Hang on a second, friend.", "Hoo boy.", "Now wait just a minute.", "Heads up, cowpoke.",
+        "Rein it in a sec.", "Hold up there.", "Well, I'll be.", "Hate to spook ya, but",
+    ],
+    "plain": [
+        "Heads up.", "Hang on.", "Quick note.", "Hold on a second.", "Just so you know,",
+        "Careful here.", "One thing:", "Wait a moment.",
+    ],
+}
+# Said when a reply was checked and nothing was wrong. Pre-generated at startup, so instant.
+PRAISE_LINES = {
+    "cowboy": [
+        "That one checks out, partner.", "Clean as a whistle.", "Looks good to me, friend.",
+        "Straight shooter, that one.", "All clear on this trail.", "Yep, that's the real deal.",
+        "Checked it. Solid as a fence post.", "Good answer, no funny business.",
+        "Can't find a thing wrong. Nice.", "Smooth ride so far.", "That's right as rain.",
+        "Good work, Claude.",
+    ],
+    "plain": [
+        "That one checks out.", "Looks good.", "All clear.", "Verified, nice.",
+        "No problems found.", "Good answer.", "Checked it, all accurate.", "Nothing wrong there.",
+    ],
+}
+PRAISE_GAP_S = 45.0  # praise at most this often, so it stays nice instead of naggy
+
 _transport: Optional[httpx.AsyncBaseTransport] = None  # tests inject a MockTransport
 
 
@@ -123,6 +157,27 @@ def style() -> str:
     return st if st in ("cowboy", "plain") else "cowboy"
 
 
+def praise_enabled() -> bool:
+    return (os.environ.get("REIGNS_VOICE_PRAISE") or "1").strip() not in ("0", "false", "off", "no")
+
+
+def _pick(options: list[str], recent: Optional[deque] = None) -> str:
+    """Random choice that avoids the last few used (so no back-to-back repeats)."""
+    fresh = [o for o in options if not recent or o not in recent] or options
+    choice = random.choice(fresh)
+    if recent is not None:
+        recent.append(choice)
+    return choice
+
+
+def pick_opener(recent: Optional[deque] = None) -> str:
+    return _pick(OPENERS[style()], recent)
+
+
+def pick_praise(recent: Optional[deque] = None) -> str:
+    return _pick(PRAISE_LINES[style()], recent)
+
+
 def recovered_line() -> str:
     return "Yeehaw, fixed it, partner!" if style() == "cowboy" else "Fixed it!"
 
@@ -164,6 +219,7 @@ def line_for(
     bubble: BubbleContent,
     recovered: bool,
     spoken_ids: Optional[set[str]] = None,
+    opener: Optional[str] = None,
 ) -> Optional[str]:
     if recovered:
         return recovered_line()
@@ -177,7 +233,9 @@ def line_for(
     rose_to_alarm = level >= 3 and level > prev_level
     if _new_problem_ids(bubble, spoken_ids or set()) or rose_to_alarm:
         text = full_line(bubble)
-        return clip_sentences("Whoa there, partner. " + text, FULL_MAX_WORDS) if style() == "cowboy" else text
+        if style() == "cowboy":
+            return clip_sentences(f"{opener or OPENERS['cowboy'][0]} {text}", FULL_MAX_WORDS)
+        return text
     return None
 
 
@@ -185,8 +243,9 @@ _SUMMARY_SYSTEM = {
     "cowboy": (
         "You are Reigns, a friendly cowboy horse who watches over someone's chat with Claude and "
         "speaks out loud when Claude gets something wrong. Say it like a warm, laid-back cowboy "
-        "talking to a friend: natural, relaxed, a little folksy (e.g. 'whoa there', 'partner', "
-        "'I reckon') but never cartoonish, and keep the facts exact."
+        "talking to a friend: natural, relaxed, a little folksy ('I reckon', 'mighty', 'y'all' "
+        "now and then) but never cartoonish, and keep the facts exact. Don't say 'howdy', and "
+        "use 'partner' at most once."
     ),
     "plain": (
         "You are Reigns, a friendly assistant pet that speaks out loud when Claude gets something "
@@ -225,7 +284,7 @@ def _clean_spoken(text: str) -> str:
     return clip_sentences(text, SUMMARY_HARD_CAP)
 
 
-async def summarize(bubble: BubbleContent) -> Optional[str]:
+async def summarize(bubble: BubbleContent, opener: Optional[str] = None) -> Optional[str]:
     """Natural spoken summary of the whole bubble via the fast model. None if unavailable/slow."""
     try:
         from app import llm
@@ -234,7 +293,9 @@ async def summarize(bubble: BubbleContent) -> Optional[str]:
         raw = await asyncio.wait_for(
             llm.complete_text(
                 _SUMMARY_SYSTEM[style()],
-                _SUMMARY_RULES.format(n=SUMMARY_MAX_WORDS) + "\n\n" + _summary_input(bubble),
+                _SUMMARY_RULES.format(n=SUMMARY_MAX_WORDS)
+                + (f' Start with exactly these words: "{opener}"' if opener else "")
+                + "\n\n" + _summary_input(bubble),
                 max_tokens=300,
                 model=llm.fast_model_name(),
             ),
@@ -291,7 +352,7 @@ async def warm_cache() -> None:
         log.info("voice disabled (no ELEVENLABS_API_KEY / REIGNS_VOICE_ID)")
         return
     made = 0
-    for line in COMMON_LINES:
+    for line in COMMON_LINES + PRAISE_LINES[style()]:
         try:
             if not _cache_path(line).exists() and await synthesize(line):
                 made += 1
@@ -306,7 +367,10 @@ class VoiceState:
 
     def __init__(self) -> None:
         self.last_spoken = -MIN_GAP_S
+        self.last_praise = -PRAISE_GAP_S
         self.spoken_ids: set[str] = set()
+        self.recent_openers: deque = deque(maxlen=4)
+        self.recent_praise: deque = deque(maxlen=4)
 
 
 async def maybe_speak(
@@ -316,16 +380,26 @@ async def maybe_speak(
     bubble: BubbleContent,
     recovered: bool,
     now: Optional[float] = None,
+    clean: bool = False,
 ) -> Optional[VoicePlay]:
+    """`clean`: this reply was checked (≥ 1 claim) and nothing in it was red or amber."""
     if not enabled():
         return None
-    text = line_for(prev_level, level, bubble, recovered, state.spoken_ids)
     now = time.monotonic() if now is None else now
+    opener = pick_opener(state.recent_openers) if style() == "cowboy" or mode() == "full" else None
+    text = line_for(prev_level, level, bubble, recovered, state.spoken_ids, opener)
+    praising = False
+    if (not text and clean and praise_enabled() and not recovered
+            and now - state.last_praise >= PRAISE_GAP_S):
+        text, praising = pick_praise(state.recent_praise), True
     if not text or now - state.last_spoken < MIN_GAP_S:
         return None
     prev_spoken, state.last_spoken = state.last_spoken, now  # hold the slot while we work
-    if mode() == "full" and not recovered:
-        summary = await summarize(bubble)
+    if praising:
+        state.last_praise = now
+        log.info("voice: praising a clean reply")
+    elif mode() == "full" and not recovered:
+        summary = await summarize(bubble, opener)
         log.info("voice: speaking %s (%d words)", "summary" if summary else "bubble text",
                  len((summary or text).split()))
         text = summary or text
