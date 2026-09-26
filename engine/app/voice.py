@@ -1,12 +1,15 @@
 """ElevenLabs voice for the pet (FR-V1, FR-V2, Role B).
 
 Two modes, picked with REIGNS_VOICE_MODE:
-- full (default): whenever a reply brings NEW problems (level ≥ 1), the pet reads the whole
-  bubble — headline, up to 3 problems, and the pattern — capped at ~70 words.
+- full (default): whenever a reply brings NEW problems (level ≥ 1), the pet talks the user
+  through ALL of them. With an Anthropic key, the fast model turns the bubble into a short,
+  natural spoken summary (≤ ~30 words, 1-2 sentences); without one (or if it's slow) it reads the bubble.
 - short (PRD FR-V2): only when the level rises to 3 or 4, says the headline (≤ 15 words).
-Speed: REIGNS_VOICE_SPEED (0.7–1.2, default 1.15) — ElevenLabs' own speed setting, so the
-voice stays natural (no pitch change), just less draggy.
-Both: a verified fix → "Fixed it!" (Recovered). At most one line per 20 s per session.
+Personality: REIGNS_VOICE_STYLE=cowboy (default) or plain. Pair it with a cowboy voice from
+the ElevenLabs Voice Library in REIGNS_VOICE_ID.
+Delivery: REIGNS_VOICE_SPEED (0.7–1.2, default 1.2) and REIGNS_VOICE_STABILITY (0–1, default
+0.35; lower = more expressive) are ElevenLabs' own settings, so no pitch change.
+A verified fix → "Yeehaw, fixed it, partner!" / "Fixed it!". At most one line per 20 s.
 
 Speed: every line is cached on disk (engine/.voice_cache/, git-ignored) and ~20 common lines
 are pre-generated at startup, so the usual lines play instantly.
@@ -21,6 +24,7 @@ import base64
 import hashlib
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -33,17 +37,21 @@ log = logging.getLogger("reigns.voice")
 
 MIN_GAP_S = 20.0
 MAX_WORDS = 15
-FULL_MAX_WORDS = 70
+FULL_MAX_WORDS = 40
 FULL_MAX_PROBLEMS = 3
+SUMMARY_MAX_WORDS = 30  # short but complete: ~8-10 s of speech
+SUMMARY_TIMEOUT_S = 3.5
 TTS_TIMEOUT_S = 6.0
 API_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 DEFAULT_MODEL = "eleven_flash_v2_5"  # ElevenLabs' low-latency model
-DEFAULT_SPEED = 1.15  # 1.0 = normal; ElevenLabs allows 0.7–1.2
+DEFAULT_SPEED = 1.2  # 1.0 = normal; ElevenLabs allows 0.7–1.2
+DEFAULT_STABILITY = 0.35  # lower = livelier, more natural delivery
 CACHE_DIR = Path(__file__).resolve().parents[1] / ".voice_cache"
 
 # Pre-generated at startup (FR-V2 "~20 common lines"): Role D's level ≥ 3 headlines + extras.
 COMMON_LINES = [
     "Fixed it!",
+    "Yeehaw, fixed it, partner!",
     "Heads up: a cited source could not be confirmed.",
     "Heads up: the summary drifts from the document.",
     "Heads up: this code uses an unsupported API.",
@@ -84,6 +92,39 @@ def _speed() -> float:
     return round(min(1.2, max(0.7, v)), 2)
 
 
+_SENTENCE = re.compile(r"(?<=[.!?…])\s+")
+
+
+def clip_sentences(text: str, n: int) -> str:
+    """Keep whole sentences while they fit in n words (so speech never stops mid-thought);
+    fall back to a word clip only if the first sentence alone is too long."""
+    out, count = [], 0
+    for sent in _SENTENCE.split(" ".join(text.split())):
+        w = len(sent.split())
+        if count + w > n:
+            break
+        out.append(sent)
+        count += w
+    return " ".join(out) if out else clip_words(text, n)
+
+
+def _stability() -> float:
+    try:
+        v = float(os.environ.get("REIGNS_VOICE_STABILITY") or DEFAULT_STABILITY)
+    except ValueError:
+        v = DEFAULT_STABILITY
+    return round(min(1.0, max(0.0, v)), 2)
+
+
+def style() -> str:
+    st = (os.environ.get("REIGNS_VOICE_STYLE") or "cowboy").strip().lower()
+    return st if st in ("cowboy", "plain") else "cowboy"
+
+
+def recovered_line() -> str:
+    return "Yeehaw, fixed it, partner!" if style() == "cowboy" else "Fixed it!"
+
+
 def clip_words(text: str, n: int = MAX_WORDS) -> str:
     words = text.split()
     return " ".join(words[:n]) + ("…" if len(words) > n else "")
@@ -108,7 +149,7 @@ def full_line(bubble: BubbleContent) -> str:
         parts.append(f"Plus {extra} more.")
     parts.append(bubble.pattern_text)
     text = " ".join(_sentence(t) for t in parts if t and t.strip())
-    return clip_words(text, FULL_MAX_WORDS)
+    return clip_sentences(text, FULL_MAX_WORDS)
 
 
 def _new_problem_ids(bubble: BubbleContent, spoken_ids: set[str]) -> set[str]:
@@ -123,7 +164,7 @@ def line_for(
     spoken_ids: Optional[set[str]] = None,
 ) -> Optional[str]:
     if recovered:
-        return "Fixed it!"
+        return recovered_line()
     if mode() == "short":
         if level >= 3 and level > prev_level and bubble.headline:
             return clip_words(bubble.headline)
@@ -133,12 +174,74 @@ def line_for(
         return None
     rose_to_alarm = level >= 3 and level > prev_level
     if _new_problem_ids(bubble, spoken_ids or set()) or rose_to_alarm:
-        return full_line(bubble)
+        text = full_line(bubble)
+        return clip_sentences("Whoa there, partner. " + text, FULL_MAX_WORDS) if style() == "cowboy" else text
     return None
 
 
+_SUMMARY_SYSTEM = {
+    "cowboy": (
+        "You are Reigns, a friendly cowboy horse who watches over someone's chat with Claude and "
+        "speaks out loud when Claude gets something wrong. Say it like a warm, laid-back cowboy "
+        "talking to a friend: natural, relaxed, a little folksy (e.g. 'whoa there', 'partner', "
+        "'I reckon') but never cartoonish, and keep the facts exact."
+    ),
+    "plain": (
+        "You are Reigns, a friendly assistant pet that speaks out loud when Claude gets something "
+        "wrong in a chat. Sound natural and conversational, like a helpful friend."
+    ),
+}
+_SUMMARY_RULES = (
+    "Turn the notes below into a QUICK heads-up you'd SAY out loud: at most {n} words, 1-2 "
+    "short sentences. Mention every problem, but compress: group similar ones (e.g. 'two made-up "
+    "papers and a broken link') and skip details the user can read in the bubble. If there's "
+    "room, end with a few words on what to do. Spoken English only: no "
+    "lists, markdown, emojis, URLs, stage directions, or quotation marks around the whole thing. "
+    "Reply with only the words to speak."
+)
+
+
+def _summary_input(bubble: BubbleContent) -> str:
+    lines = [f"Headline: {bubble.headline}"]
+    lines += [f"Problem: {p.text}" for p in bubble.problems]
+    if bubble.pattern_text:
+        lines.append(f"Pattern: {bubble.pattern_text}")
+    if bubble.confidence_label:
+        lines.append(f"How sure: {bubble.confidence_label} {bubble.confidence_reason}".strip())
+    return "\n".join(lines)
+
+
+def _clean_spoken(text: str) -> str:
+    text = re.sub(r"[*_#`>\[\]]", "", text or "")
+    text = re.sub(r"https?://\S+", "", text)
+    text = " ".join(text.split()).strip().strip('"').strip()
+    return clip_sentences(text, SUMMARY_MAX_WORDS + 8)
+
+
+async def summarize(bubble: BubbleContent) -> Optional[str]:
+    """Natural spoken summary of the whole bubble via the fast model. None if unavailable/slow."""
+    try:
+        from app import llm
+        if not llm.llm_available():
+            return None
+        raw = await asyncio.wait_for(
+            llm.complete_text(
+                _SUMMARY_SYSTEM[style()],
+                _SUMMARY_RULES.format(n=SUMMARY_MAX_WORDS) + "\n\n" + _summary_input(bubble),
+                max_tokens=200,
+                model=llm.fast_model_name(),
+            ),
+            timeout=SUMMARY_TIMEOUT_S,
+        )
+    except Exception as exc:  # LLMError, timeout, anything: fall back to reading the bubble
+        log.warning("voice summary failed, reading the bubble instead: %r", exc)
+        return None
+    text = _clean_spoken(raw)
+    return text if len(text.split()) >= 4 else None
+
+
 def _cache_path(text: str) -> Path:
-    key = hashlib.sha1(f"{os.environ.get('REIGNS_VOICE_ID')}|{_model()}|{_speed()}|{text}".encode())
+    key = hashlib.sha1(f"{os.environ.get('REIGNS_VOICE_ID')}|{_model()}|{_speed()}|{_stability()}|{text}".encode())
     return CACHE_DIR / f"{key.hexdigest()}.mp3"
 
 
@@ -158,7 +261,8 @@ async def synthesize(text: str) -> Optional[bytes]:
                 headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"],
                          "accept": "audio/mpeg"},
                 json={"text": text, "model_id": _model(),
-                      "voice_settings": {"speed": _speed()}},
+                      "voice_settings": {"speed": _speed(), "stability": _stability(),
+                                         "similarity_boost": 0.8}},
             )
     except httpx.HTTPError as exc:
         log.warning("elevenlabs request failed: %s", exc)
@@ -212,14 +316,17 @@ async def maybe_speak(
     now = time.monotonic() if now is None else now
     if not text or now - state.last_spoken < MIN_GAP_S:
         return None
+    prev_spoken, state.last_spoken = state.last_spoken, now  # hold the slot while we work
+    if mode() == "full" and not recovered:
+        text = await summarize(bubble) or text
     try:
         audio = await synthesize(text)
     except Exception as exc:
         log.error("voice failed: %s", exc)
-        return None
+        audio = None
     if not audio:
+        state.last_spoken = prev_spoken
         return None
-    state.last_spoken = now
     if recovered:
         state.spoken_ids.clear()  # after a fix, a relapse should be read out again
     else:
