@@ -5,7 +5,15 @@ from __future__ import annotations
 import pytest
 
 from app.course_correct import api
-from app.models import Claim, ClaimVerdict, DetectorResult, DriftProfile, Evidence, SessionContext
+from app.models import (
+    Claim,
+    ClaimVerdict,
+    DetectorResult,
+    DriftProfile,
+    Evidence,
+    SessionContext,
+    SourceDoc,
+)
 
 
 @pytest.fixture
@@ -17,6 +25,10 @@ def summary_session(load_scenario) -> SessionContext:
     for claim_data in scenario["expected"]["claims"]:
         claim = Claim(**claim_data)
         session.claims[claim.claim_id] = claim
+        if claim.source_ref:
+            session.source_docs[claim.source_ref] = SourceDoc(
+                doc_id=claim.source_ref, message_id="source-message", text="Pasted article"
+            )
         results = [DetectorResult(**result) for result in results_by_claim.get(claim.claim_id, [])]
         status = "red" if any(result.status == "not_in_source" for result in results) else "green"
         session.verdicts[claim.claim_id] = ClaimVerdict(
@@ -273,4 +285,4 @@ def test_fix_it_citation_copy_hides_scores_and_avoids_nested_quotes(
     assert "0.58" not in prompt
     assert "exists.." not in prompt
     assert f"“{quote}”" not in prompt
-    assert quote in prompt
+    assert "Transformer Models for Honeybee Colony Collapse Forecasting" in prompt
