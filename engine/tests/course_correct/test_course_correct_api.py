@@ -70,7 +70,7 @@ async def test_each_nonzero_level_builds_a_level_matched_prompt(
 
     assert bubble.level == level
     assert len(bubble.headline) <= 60
-    assert len(bubble.problems) <= 3
+    assert len(bubble.problems) == len(profile.failures)
     assert all(len(problem.text) <= 120 for problem in bubble.problems)
     assert len(bubble.pattern_text) <= 200
     assert bubble.correction is not None
@@ -87,6 +87,75 @@ async def test_level_zero_has_no_correction(summary_session: SessionContext) -> 
 
     assert bubble.level == 0
     assert bubble.correction is None
+
+
+@pytest.fixture
+def five_flagged_session() -> SessionContext:
+    """Mixed severity in insertion order, so bubble ordering cannot rely on the profile."""
+    session = SessionContext(session_id="five-flagged")
+    for claim_id, final in (
+        ("amber-1", "amber"),
+        ("red-1", "red"),
+        ("amber-2", "amber"),
+        ("red-2", "red"),
+        ("red-3", "red"),
+    ):
+        quote = f"Claim {claim_id} states the report's count is wrong."
+        claim = Claim(
+            claim_id=claim_id,
+            message_id="answer-1",
+            quote=quote,
+            normalized=quote,
+            type="fact",
+            risk="high",
+        )
+        result = DetectorResult(
+            detector="claim_verifier",
+            status="contradicted" if final == "red" else "unverified",
+            confidence=0.95 if final == "red" else 0.5,
+            evidence=(
+                [Evidence(source="Official report", snippet="The official count is different.")]
+                if final == "red"
+                else []
+            ),
+            explanation="The official report disagrees." if final == "red" else "No result found.",
+        )
+        session.claims[claim_id] = claim
+        session.verdicts[claim_id] = ClaimVerdict(
+            claim_id=claim_id,
+            quote=quote,
+            type="fact",
+            risk="high",
+            final=final,
+            detector_results=[result],
+        )
+    return session
+
+
+async def test_bubble_includes_every_flagged_claim_red_first(
+    five_flagged_session: SessionContext,
+) -> None:
+    profile = DriftProfile(
+        failures=["amber-2", "red-3", "amber-1", "red-1", "red-2"],
+        root_causes=["knowledge_gap"],
+    )
+
+    bubble = await api.build_bubble(3, profile, five_flagged_session)
+
+    assert [problem.claim_id for problem in bubble.problems] == [
+        "red-1",
+        "red-2",
+        "red-3",
+        "amber-1",
+        "amber-2",
+    ]
+    assert all(len(problem.text) <= 120 for problem in bubble.problems)
+    assert all(problem.text.startswith("Claim ") for problem in bubble.problems)
+    assert bubble.correction is not None
+    assert all(
+        f"Claim {claim_id}" in bubble.correction.text
+        for claim_id in ("red-1", "red-2", "red-3", "amber-1", "amber-2")
+    )
 
 
 async def test_unverified_red_bubble_uses_cautious_claim_copy() -> None:

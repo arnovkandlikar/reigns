@@ -429,7 +429,7 @@ def _correction_text(
 ) -> str:
     pattern, redo = _pattern(profile.root_causes)
     issue_lines = []
-    for index, verdict in enumerate(flagged[:3], start=1):
+    for index, verdict in enumerate(flagged, start=1):
         evidence = _evidence_summary(verdict, session)
         clean = _clean_claim(verdict, session.claims.get(verdict.claim_id))
         if variant in ("v2", "v3"):
@@ -439,8 +439,11 @@ def _correction_text(
     issues = "\n".join(issue_lines) or "No active flagged claim is available to recheck."
     target_ids = list(dict.fromkeys(profile.failures + profile.blast_radius))
     source_claims = [session.claims[cid] for cid in target_ids if cid in session.claims]
-    target = "; ".join(_clean_claim(session.verdicts[claim.claim_id], claim)
-                       for claim in source_claims[:3] if claim.claim_id in session.verdicts)
+    target = "; ".join(
+        _clean_claim(session.verdicts[claim.claim_id], claim)
+        for claim in source_claims
+        if claim.claim_id in session.verdicts
+    )
     if not target:
         target = "the specific flagged points above"
 
@@ -516,13 +519,8 @@ def _correction_text(
 async def build_bubble(level: int, profile: DriftProfile, session: SessionContext) -> BubbleContent:
     """Create the level-matched plain-English bubble and correction (PRD FR-D2–FR-D4)."""
     level = max(0, min(4, int(level)))
-    flagged = [
-        session.verdicts[claim_id] for claim_id in profile.failures if claim_id in session.verdicts
-    ]
-    if not flagged:
-        flagged = _flagged(session)
-
-    visible = flagged[:3]
+    flagged = _flagged(session)
+    visible = flagged
     direct_count = sum(_direct_issue(v) for v in visible)
     source_absence = any(_source_absence(v, session) for v in visible)
     substantiated = bool(direct_count or source_absence)

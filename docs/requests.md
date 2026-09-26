@@ -94,3 +94,8 @@ Status: open
 What: Update `engine/tests/engine/test_api.py::test_ws_fake_citation_flow` to expect a cautious verify nudge for the current `scenario_fake_citation.json` fixture, or give the fixture genuine counter-source evidence if it must remain an Alarmed diagnostic reset. The fixture's three red reference results contain only `No matching work found`.
 Why: The old assertion requires bubble level 3 and `diagnostic_reset` for lookup absence alone, which conflicts with FR-D4's evidence-matched confidence and the new false-alarm requirement. Course Correct now correctly returns level 1 and `verify_nudge`; the engine's red verdict and heat 75 remain a Role B/C integration issue.
 Status: open
+
+## 2026-09-26 — from Role D → team (agreed FR-D4 change)
+What: Replace the PRD FR-D4 "up to 3 problems" bubble limit with every active red and amber claim, ordered red before amber. Keep each problem's plain-English text at 120 characters or less. Course Correct and the companion now support a scrolling list.
+Why: A reply with more than three flagged claims must show every problem in `bubble.content.problems`; the team explicitly agreed to this change.
+Status: agreed
