@@ -50,3 +50,10 @@ def test_green():
     assert final_status(claim(), [r("consistency_probe", "consistent")]) == "green"
     assert final_status(claim(), [r("claim_verifier", "supported"),
                                   r("consistency_probe", "uncertain")]) == "amber"
+
+
+def test_scattered_answers_without_evidence_need_high_confidence_for_red():
+    """docs/requests.md 04:55: no evidence either way + mildly scattered samples → amber."""
+    no_ev = r("claim_verifier", "unverified")
+    assert final_status(claim(), [no_ev, r("consistency_probe", "likely_hallucination", 0.9)]) == "red"
+    assert final_status(claim(), [no_ev, r("consistency_probe", "likely_hallucination", 0.7)]) == "amber"

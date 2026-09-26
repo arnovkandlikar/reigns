@@ -16,6 +16,7 @@ from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from app import plugins
+from app import voice
 from app.learning import store
 from app.ledger import Ledger
 from app.models import INBOUND_TYPES, PAYLOAD_MODELS, Envelope, ErrorPayload, MessageNew
@@ -65,9 +66,11 @@ async def lifespan(_: FastAPI):
     await ledger.open()
     # FR-L1: connect to Atlas in the background so a slow/unreachable cluster never delays startup
     startup_task = asyncio.create_task(store.startup())
+    voice_task = asyncio.create_task(voice.warm_cache())  # FR-V2: pre-generate common lines
     log.info("engine up", extra={"detectors": plugins.available_detectors()})
     yield
     startup_task.cancel()
+    voice_task.cancel()
     await ledger.close()
 
 
@@ -84,7 +87,25 @@ async def debug_status() -> dict:
     """Which teammates' modules are plugged in right now."""
     return {"detectors": plugins.available_detectors(),
             "course_correct": plugins._optional_import("app.course_correct.api") is not None,
-            "mongo": await store.ping(), "mongo_queued": store.queued()}
+            "mongo": await store.ping(), "mongo_queued": store.queued(),
+            "voice": voice.enabled()}
+
+
+@app.post("/debug/voice")
+async def debug_voice(text: str = "Heads up: a cited source could not be confirmed.") -> dict:
+    """Say `text` with ElevenLabs and save it to engine/logs/voice_test.mp3 so you can play it:
+    curl -X POST "localhost:8765/debug/voice?text=Hello"  then  afplay logs/voice_test.mp3"""
+    if not voice.enabled():
+        raise HTTPException(400, "voice is off: set ELEVENLABS_API_KEY and REIGNS_VOICE_ID")
+    t0 = time.perf_counter()
+    cached = voice._cache_path(text).exists()
+    audio = await voice.synthesize(text)
+    if not audio:
+        raise HTTPException(502, "ElevenLabs call failed; see the engine log for the reason")
+    out = ROOT / "engine" / "logs" / "voice_test.mp3"
+    out.write_bytes(audio)
+    return {"ok": True, "bytes": len(audio), "cached": cached,
+            "ms": int((time.perf_counter() - t0) * 1000), "saved_to": str(out)}
 
 
 def parse_inbound(raw: Any) -> tuple[Envelope, Any]:

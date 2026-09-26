@@ -57,6 +57,7 @@ class Session:
         self.last_heat_sent: Optional[tuple] = None
         self._background: set[asyncio.Task] = set()
         self.voice_sink: Optional[Callable] = None  # set by the WS handler
+        self.voice_state = voice.VoiceState()
 
     @property
     def sid(self) -> str:
@@ -267,7 +268,9 @@ class Session:
         await self.ledger.correction(self.sid, rec)
 
     async def _maybe_voice(self, prev_level: int, level: int, bubble: BubbleContent) -> None:
-        vp = await voice.maybe_speak(prev_level, level, bubble, self.heat.recovered(self.clock()))
+        vp = await voice.maybe_speak(
+            self.voice_state, prev_level, level, bubble, self.heat.recovered(self.clock())
+        )
         if vp and self.voice_sink:
             await self.voice_sink(envelope("voice.play", self.sid, vp))
 

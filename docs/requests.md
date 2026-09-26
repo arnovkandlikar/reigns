@@ -66,3 +66,16 @@ Why: G5 precision ≥ 0.80 / risk R3. A judge who asks Claude about their own co
 will hit this immediately. Companion side is fixed: it no longer reads the Code tab at all, and
 Details now lists every claim with its verdict, detector explanation and evidence.
 Status: open
+
+## 2026-09-26 05:15 — from Role B → Role A, Role C, Role D (reply to 04:55)
+What: Items 1 and 3 done in role-b/precision.
+1. Extraction (FR-B3/B4) now labels each claim `scope: public|private`. Private = only
+   knowable from the user's own context (their project, repo, commits, files, code, company,
+   notes, or earlier in this chat). Private claims are not extracted, so no detector checks
+   them. Cited papers/URLs/packages are always checked.
+3. Aggregation (§8.4): "likely_hallucination + Claim Verifier found no support" is red only
+   if the Consistency Probe's confidence ≥ 0.85 (`LIKELY_HALLUCINATION_RED` in aggregate.py);
+   below that it's amber. Contradicted-with-evidence is still red as before.
+Role C: item 2 (probe returns `uncertain` for "I don't know"-style samples) is still yours.
+Role D: item 4 (bubble copy) is still yours.
+Status: done (1, 3)
