@@ -196,6 +196,8 @@ struct SessionStartPayload: Encodable {
     /// Language the pet speaks: "es" for Spanish. Left out (nil) for English, the engine's default,
     /// so engines without this field still accept session.start.
     var language: String?
+    /// Which pet is on screen, for its voice and personality: "charlie" or "marley".
+    var character: String?
 
     private enum CodingKeys: String, CodingKey {
         case app
@@ -203,6 +205,7 @@ struct SessionStartPayload: Encodable {
         case companionVersion = "companion_version"
         case chatKey = "chat_key"
         case language
+        case character
     }
 }
 

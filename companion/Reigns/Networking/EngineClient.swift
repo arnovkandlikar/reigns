@@ -34,6 +34,8 @@ final class EngineClient: NSObject {
     private var chatKey: String?
     /// Sent in session.start (nil = English).
     private var language: String? = PetLanguage.saved.wireCode
+    /// Sent in session.start so the engine uses this pet's voice and personality.
+    private var character: String? = PetCharacter.saved.wireCode
     private var status = Status.offline
     private var attempt = 0
     private var reconnectWork: DispatchWorkItem?
@@ -63,6 +65,13 @@ final class EngineClient: NSObject {
     /// restored through the chat key.
     func setLanguage(_ language: PetLanguage) {
         self.language = language.wireCode
+        startNewSession(chatKey: chatKey)
+    }
+
+    /// New character's voice takes effect straight away: a fresh session for the same chat, so its
+    /// score is restored through the chat key.
+    func setCharacter(_ character: PetCharacter) {
+        self.character = character.wireCode
         startNewSession(chatKey: chatKey)
     }
 
@@ -168,7 +177,7 @@ final class EngineClient: NSObject {
         let companion = bundle?["CFBundleShortVersionString"] as? String ?? "1.0"
         if let hello = encode("session.start", SessionStartPayload(
             appVersion: claudeVersion(), companionVersion: companion, chatKey: chatKey,
-            language: language)) {
+            language: language, character: character)) {
             transmit(hello, on: task)
         }
         let pending = queue
