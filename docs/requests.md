@@ -79,3 +79,18 @@ What: Items 1 and 3 done in role-b/precision.
 Role C: item 2 (probe returns `uncertain` for "I don't know"-style samples) is still yours.
 Role D: item 4 (bubble copy) is still yours.
 Status: done (1, 3)
+
+## 2026-09-26 — from Role D → Role C
+What: When a paper claim includes a DOI, look it up directly at `https://api.crossref.org/works/<doi>` and OpenAlex `doi:<doi>` before title search. Return `contradicted` only if the DOI fails to resolve or resolves to a clearly different paper; a title search returning no match is `unverified`.
+Why: The Reference Auditor reported no match for Anwar et al. (2023), "Apis-Prime", DOI `10.1016/j.asoc.2023.110546`, and Ngo et al. (2021), Sensors 21(11) 3900, DOI `10.3390/s21113900`; both DOIs resolve correctly. The false red verdict drove heat to Meltdown.
+Status: open
+
+## 2026-09-26 — from Role D → Role B
+What: In `engine/app/fixcheck.py` and `engine/app/session.py`, treat a reply that stands firm on an originally flagged paper claim and supplies its checkable DOI/URL as resolved in the model's favour when the original alarm was based only on lookup absence. Apply that result before persisting the correction trial and adjusting heat, and avoid re-escalating the resolved claim. Also prevent absence-only reference verdicts from contributing red heat; Course Correct can only downgrade the bubble/prompt, not the engine heat already computed.
+Why: FR-D3/FR-D5 and PRD R5 allow "I was right" when sourced. `on_fix_outcome()` now recognizes this case locally, but Role B's `verify_fix()` result, heat update, and Mongo write run before the hook, so the engine-level outcome can remain inconsistent until this integration is changed.
+Status: open
+
+## 2026-09-26 — from Role D → Role B (test expectation)
+What: Update `engine/tests/engine/test_api.py::test_ws_fake_citation_flow` to expect a cautious verify nudge for the current `scenario_fake_citation.json` fixture, or give the fixture genuine counter-source evidence if it must remain an Alarmed diagnostic reset. The fixture's three red reference results contain only `No matching work found`.
+Why: The old assertion requires bubble level 3 and `diagnostic_reset` for lookup absence alone, which conflicts with FR-D4's evidence-matched confidence and the new false-alarm requirement. Course Correct now correctly returns level 1 and `verify_nudge`; the engine's red verdict and heat 75 remain a Role B/C integration issue.
+Status: open

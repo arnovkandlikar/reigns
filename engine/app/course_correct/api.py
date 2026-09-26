@@ -32,6 +32,40 @@ _PROMPT_TYPES = {
 _GENERIC_WORDS = frozenset({"claim", "said", "says", "answer", "source", "document"})
 _NUMBER_OR_DATE = re.compile(r"\b\d+(?:[.,]\d+)?\b|\b(?:19|20)\d{2}\b")
 _MATCH_SCORE = re.compile(r"\s*\(best (?:title )?match \d+(?:\.\d+)?\)", re.IGNORECASE)
+_DOI = re.compile(r"\b10\.\d{4,9}/[^\s<>\]\[\"']+", re.IGNORECASE)
+_URL = re.compile(r"https?://[^\s<>\]\[\"']+", re.IGNORECASE)
+_TAG = re.compile(r"\[(?:verified|unverified)\]", re.IGNORECASE)
+_QUESTION = re.compile(r"^Does this claim hold up\?\s*", re.IGNORECASE)
+
+
+def _lookup_absence(result: object) -> bool:
+    """FR-D4: a failed search is uncertainty, even if labeled contradicted upstream."""
+    evidence = getattr(result, "evidence", [])
+    pieces = [item.snippet for item in evidence] or [getattr(result, "explanation", "")]
+    return bool(pieces) and all(
+        re.search(r"no matching|not found|could not find|no supporting", part, re.IGNORECASE)
+        for part in pieces
+    )
+
+
+def _checkable_source(text: str) -> str | None:
+    match = _DOI.search(text) or _URL.search(text)
+    return match.group(0).rstrip(".,;)") if match else None
+
+
+def _clean_claim(verdict: ClaimVerdict, claim: Claim | None) -> str:
+    raw = claim.normalized if claim and claim.normalized else verdict.quote
+    raw = _QUESTION.sub("", _TAG.sub("", raw))
+    raw = re.sub(r"[`*_#]", "", raw)
+    raw = " ".join(raw.split()).strip().strip("-:;,.").strip()
+    reference = _checkable_source(" ".join(filter(None, [verdict.quote, raw])))
+    if reference and reference.lower() not in raw.lower():
+        raw += f", DOI {reference}" if reference.startswith("10.") else f", {reference}"
+    return raw
+
+
+def _has_source_doc(session: SessionContext, claim: Claim | None) -> bool:
+    return bool(claim and claim.source_ref and claim.source_ref in session.source_docs)
 
 _CAUSE_COPY: dict[str, tuple[str, str, str]] = {
     "knowledge_gap": (
@@ -117,7 +151,8 @@ def _root_cause(verdict: ClaimVerdict) -> str:
             return "source_drift"
         if result.detector == "code_api_checker" or result.status == "nonexistent_api":
             return "api_confusion"
-        if result.detector == "reference_auditor" and result.status == "contradicted":
+        if (result.detector == "reference_auditor" and result.status == "contradicted"
+                and not _lookup_absence(result)):
             return "fabricated_sources"
 
     claim_text = verdict.quote.lower()
@@ -197,7 +232,7 @@ async def _judged_dependency_links(
     if isinstance(cached, list):
         return cached
     if not llm_available():
-        return _dependency_links(session, failures)
+        return []
 
     failed_lines = [
         {
@@ -232,9 +267,9 @@ async def _judged_dependency_links(
         )
     except (LLMError, TimeoutError) as exc:
         log.warning("dependency judge unavailable; using local fallback: %s", exc)
-        return _dependency_links(session, failures)
+        return []
     if not isinstance(judged, dict) or not isinstance(judged.get("dependent_claim_ids"), list):
-        return _dependency_links(session, failures)
+        return []
     candidate_ids = {claim.claim_id for claim in candidates}
     links = sorted(
         {
@@ -283,41 +318,42 @@ def _direct_issue(verdict: ClaimVerdict) -> bool:
     return any(
         result.confidence >= 0.8
         and (
-            (result.status == "contradicted" and bool(result.evidence))
+            (result.status == "contradicted" and bool(result.evidence)
+             and not _lookup_absence(result))
             or result.status in ("nonexistent_api", "caved_without_evidence")
         )
         for result in verdict.detector_results
     )
 
 
-def _source_absence(verdict: ClaimVerdict) -> bool:
+def _source_absence(verdict: ClaimVerdict, session: SessionContext | None = None) -> bool:
+    if session is not None and not _has_source_doc(session, session.claims.get(verdict.claim_id)):
+        return False
     return any(
         result.status == "not_in_source" and result.confidence >= 0.8
         for result in verdict.detector_results
     )
 
 
-def _problem_text(verdict: ClaimVerdict, claim: Claim | None = None) -> str:
+def _problem_text(verdict: ClaimVerdict, claim: Claim | None = None,
+                  session: SessionContext | None = None) -> str:
     """Show Claude's claim and a plain reason, never a clipped detector note."""
     statuses = {result.status for result in verdict.detector_results}
-    if any(
-        result.status == "contradicted" and result.evidence for result in verdict.detector_results
-    ):
+    if any(result.status == "contradicted" and result.evidence
+           and not _lookup_absence(result) for result in verdict.detector_results):
         reason = "Evidence conflicts with this."
     elif "nonexistent_api" in statuses:
         reason = "The library does not provide that API."
     elif "caved_without_evidence" in statuses:
         reason = "Claude changed its answer without new evidence."
-    elif _source_absence(verdict):
+    elif _source_absence(verdict, session):
         reason = "The source does not support this."
-    elif "not_in_source" in statuses:
+    elif "not_in_source" in statuses and session is not None and _has_source_doc(session, claim):
         reason = "I could not find this in the source."
     else:
         reason = "I could not verify this."
 
-    candidates = [verdict.quote]
-    if claim and claim.normalized != verdict.quote:
-        candidates.append(claim.normalized)
+    candidates = [_clean_claim(verdict, claim)]
     sentences = []
     for text in candidates:
         flat = " ".join(text.split()).strip()
@@ -352,9 +388,13 @@ def _evidence_url(verdict: ClaimVerdict) -> str | None:
     return None
 
 
-def _evidence_summary(verdict: ClaimVerdict) -> str:
+def _evidence_summary(verdict: ClaimVerdict, session: SessionContext | None = None) -> str:
     for result in verdict.detector_results:
         if result.status == "not_in_source":
+            if session is not None and not _has_source_doc(
+                session, session.claims.get(verdict.claim_id)
+            ):
+                continue
             return "No supporting passage was found in the relevant source excerpts."
         if result.status in ("error", "unverified", "uncertain"):
             continue
@@ -390,27 +430,25 @@ def _correction_text(
     pattern, redo = _pattern(profile.root_causes)
     issue_lines = []
     for index, verdict in enumerate(flagged[:3], start=1):
-        evidence = _evidence_summary(verdict)
-        if variant == "v2":
-            issue_lines.append(
-                f"{index}. Does this claim hold up? {verdict.quote} — Evidence: {evidence}"
-            )
-        elif variant == "v3":
-            issue_lines.append(f"{index}. [ ] Recheck: {verdict.quote} — Evidence: {evidence}")
+        evidence = _evidence_summary(verdict, session)
+        clean = _clean_claim(verdict, session.claims.get(verdict.claim_id))
+        if variant in ("v2", "v3"):
+            issue_lines.append(f"{index}. Recheck {clean} — Evidence: {evidence}")
         else:
-            issue_lines.append(f"{index}. Claim: {verdict.quote} — Evidence: {evidence}")
+            issue_lines.append(f"{index}. {clean} — Evidence: {evidence}")
     issues = "\n".join(issue_lines) or "No active flagged claim is available to recheck."
     target_ids = list(dict.fromkeys(profile.failures + profile.blast_radius))
     source_claims = [session.claims[cid] for cid in target_ids if cid in session.claims]
-    target = "; ".join(snippet(claim.normalized, 180).rstrip(" .!?") for claim in source_claims[:3])
+    target = "; ".join(_clean_claim(session.verdicts[claim.claim_id], claim)
+                       for claim in source_claims[:3] if claim.claim_id in session.verdicts)
     if not target:
         target = "the specific flagged points above"
 
     # FR-D2: each level keeps all five required parts, with the requested level-specific length.
     if level == 1:
         first_issue = (
-            f"this claim: {flagged[0].quote} — Evidence: "
-            f"{_evidence_summary(flagged[0]).rstrip(' .')}"
+            f"this claim: {_clean_claim(flagged[0], session.claims.get(flagged[0].claim_id))} — Evidence: "
+            f"{_evidence_summary(flagged[0], session).rstrip(' .')}"
             if flagged
             else target
         )
@@ -451,14 +489,24 @@ def _correction_text(
             "know’; if the evidence supports your original answer, keep it and explain why."
         )
 
+    user_questions = [m.text.strip() for m in sorted(session.messages, key=lambda m: m.position)
+                      if m.role == "user" and m.text.strip()]
+    original_question = next((text for text in reversed(user_questions) if "?" in text),
+                             user_questions[-1] if user_questions else "") or next(
+        (claim.context for claim in source_claims if claim.context), "Original question unavailable"
+    )
+    confirmed = [
+        _clean_claim(verdict, session.claims.get(verdict.claim_id))
+        for verdict in session.active_verdicts() if verdict.final == "green"
+    ]
+    confirmed_text = "; ".join(confirmed[:3]) if confirmed else "No claims independently confirmed yet."
     return (
         "Start a fresh chat with this handoff:\n"
-        + ("- First question: what does the evidence establish?\n" if variant == "v2" else "")
-        + ("- Checklist for the new chat:\n" if variant == "v3" else "")
-        + f"- Goal: continue the user's original task, rechecking {target}.\n"
+        + f"- Original question: {original_question}\n"
+        + f"- Confirmed: {confirmed_text}\n"
         f"- Problems and evidence:\n{issues}\n"
         f"- Pattern: {pattern}\n"
-        f"- Recheck: {redo}\n"
+        f"- Next step: {redo} Recheck {target}.\n"
         "- Guardrails: use only evidence for factual claims; do not rely on unsupported points.\n"
         "- Format: mark claims [verified] or [unverified]; say ‘I don't know’ when evidence is "
         "missing. Keep any original answer that the evidence supports."
@@ -476,8 +524,11 @@ async def build_bubble(level: int, profile: DriftProfile, session: SessionContex
 
     visible = flagged[:3]
     direct_count = sum(_direct_issue(v) for v in visible)
-    source_absence = any(_source_absence(v) for v in visible)
+    source_absence = any(_source_absence(v, session) for v in visible)
     substantiated = bool(direct_count or source_absence)
+    # FR-D4: an upstream red verdict backed only by failed lookup is still a verify nudge.
+    if visible and not substantiated:
+        level = 1
     causes = profile.root_causes
     pattern, _redo = _pattern(causes)
     if level == 1 and flagged:
@@ -515,7 +566,7 @@ async def build_bubble(level: int, profile: DriftProfile, session: SessionContex
     problems = [
         BubbleProblem(
             claim_id=verdict.claim_id,
-            text=_problem_text(verdict, session.claims.get(verdict.claim_id)),
+            text=_problem_text(verdict, session.claims.get(verdict.claim_id), session),
             evidence_url=_evidence_url(verdict),
         )
         for verdict in visible
@@ -576,5 +627,28 @@ async def build_bubble(level: int, profile: DriftProfile, session: SessionContex
 
 def on_fix_outcome(session: SessionContext, correction_id: str, fixed: bool) -> None:
     """Keep the verified outcome available for the bandit stage (FR-D5 / FR-L2)."""
+    correction = next((c for c in session.corrections if c.correction_id == correction_id), None)
+    if correction and not fixed:
+        next_reply = next((m for m in reversed(session.messages) if m.role == "assistant"), None)
+        target_sources = {
+            _checkable_source(session.claims[cid].quote + " " + session.claims[cid].normalized)
+            for cid in correction.target_claim_ids if cid in session.claims
+        }
+        target_sources.discard(None)
+        if next_reply and any(source.lower() in next_reply.text.lower()
+                              for source in target_sources):
+            # FR-D3: standing firm with a checkable citation resolves an absence-only alarm.
+            absence_only = all(
+                _lookup_absence(result)
+                for cid in correction.target_claim_ids
+                if cid in session.verdicts
+                for result in session.verdicts[cid].detector_results
+                if result.status not in ("supported", "consistent", "error")
+            )
+            if absence_only:
+                fixed = True
+                correction.fixed = True
+                correction.fix_reason = "The model stood firm and supplied a checkable source."
+                session.resolved_claim_ids.update(correction.target_claim_ids)
     outcomes = session.cache.setdefault("course_correct:fix_outcomes", {})
     outcomes[correction_id] = bool(fixed)
