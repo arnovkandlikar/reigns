@@ -117,9 +117,71 @@ async def test_questions_skip_the_llm_entirely():
 
 
 async def test_pasted_documents_are_not_memorised():
-    s, m = session_with("I pasted this: " + "lorem ipsum " * 200)
+    s, m = session_with("I pasted this: " + "lorem ipsum dolor sit amet " * 60)
     judge = scripted([{"kind": "user_fact", "text": "doc fact", "subject": "x"}])
-    assert await memory.on_user_message(s, m, judge=judge) == []
+    await memory.on_user_message(s, m, judge=judge)
+    assert "lorem ipsum dolor sit amet lorem" not in judge.calls[0][0]
+
+
+ARTICLE = ("The Eiffel Tower is a wrought-iron lattice tower on the Champ de Mars. " * 12).strip()
+
+
+@pytest.mark.parametrize(
+    ("message", "kept", "dropped", "attachments"),
+    [
+        (
+            f"Keep it under 200 words for my class.\n\n{ARTICLE}\n\nWe must cite pages.",
+            ["under 200 words", "must cite pages"],
+            ["lattice tower"],
+            [],
+        ),
+        (
+            "My app must run on Python 3.8. Here's my code:\n```python\nmatch x:\n  case 1: pass\n```",
+            ["Python 3.8"],
+            ["match x"],
+            [],
+        ),
+        (
+            "quarterly_report.pdf\nOur budget is under $500.",
+            ["budget is under $500"],
+            [],
+            ["quarterly_report.pdf"],
+        ),
+        (
+            "> The API allows 5000 requests\nThat is outdated, our limit is 100/min.",
+            ["limit is 100/min"],
+            ["5000"],
+            [],
+        ),
+    ],
+)
+def test_split_authored_keeps_only_the_users_own_words(message, kept, dropped, attachments):
+    authored, found = memory.split_authored(message)
+    assert all(k in authored for k in kept)
+    assert not any(d in authored for d in dropped)
+    assert found == attachments
+
+
+def test_long_authored_text_keeps_start_and_end():
+    text = "We must use Postgres. " + ("I think about many things. " * 400) + "Deadline is Friday."
+    authored, _ = memory.split_authored(text)
+    assert "Postgres" in authored and "Deadline is Friday" in authored
+    assert len(authored) < len(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "worth"),
+    [
+        ("The server runs Ubuntu 20.04.", True),  # no I/we/my — used to be skipped
+        ("Deadline is Friday.", True),
+        ("I'm on pandas 1.5, how do I pivot?", True),
+        ("Who was the first mayor of Tórshavn?", False),
+        ("ok thanks!", False),
+        ("cool, got it", False),
+    ],
+)
+def test_worth_extracting(text, worth):
+    assert memory.worth_extracting(text) is worth
 
 
 async def test_bad_llm_output_is_ignored_safely():
@@ -239,7 +301,7 @@ async def test_embeddings_are_used_when_available(monkeypatch):
         "Throttle calls to stay safe.": [0.9, 0.1],
     }
 
-    async def fake_embed(text):
+    async def fake_embed(text, input_type="document"):
         return vecs.get(text, [0.0, 1.0])
 
     monkeypatch.setattr(memory, "embed", fake_embed)

@@ -97,7 +97,7 @@ class BaseDetector(ABC):
     name: ClassVar[DetectorName]
 
     # ---- public entry point (called by app/plugins.py) -------------------------------------
-    async def check(self, claim: Claim, session: SessionContext) -> DetectorResult:
+    async def check(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
         t0 = time.perf_counter()
         try:
             result = await self._check(claim, session)
@@ -114,13 +114,18 @@ class BaseDetector(ABC):
             log.exception("%s crashed on claim %s", self.name, claim.claim_id)
             result = self.error(f"{type(exc).__name__}: {exc}")
 
+        if result is None:
+            # "Nothing to say about this claim" (e.g. memory_consistency with no relevant
+            # memory). The engine skips None results, so the verdict is left unchanged.
+            return None
         # Always stamp latency here so no detector forgets to (§12.4 latency_ms).
         result.latency_ms = int((time.perf_counter() - t0) * 1000)
         return result
 
     @abstractmethod
-    async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult:
-        """The detector's real logic. May raise — check() converts exceptions to 'error'."""
+    async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
+        """The detector's real logic. May raise — check() converts exceptions to 'error'.
+        May return None for "nothing to say" (the engine then ignores this detector)."""
 
     # ---- result builders --------------------------------------------------------------------
     def result(

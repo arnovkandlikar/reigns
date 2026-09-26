@@ -71,28 +71,112 @@ USER_KINDS = ("user_fact", "constraint")
 
 MAX_CARD_WORDS = 30  # cards are short on purpose: easy to read, cheap to put in prompts
 MAX_CARDS_PER_MESSAGE = 5
-MIN_USER_TEXT = 12  # characters; shorter messages ("ok", "thanks") carry no facts
-MAX_USER_TEXT = 1500  # longer = a pasted document (FR-B11) — not a statement about the user
+# What the extraction model sees: the user's OWN writing (pasted blocks removed). If that's
+# still very long, the start and end are kept — rules and setup usually sit around the paste
+# ("Here's my code … it must run on Python 3.8").
+AUTHORED_HEAD = 2000
+AUTHORED_TAIL = 1500
 
 # Dedupe: a new card this similar to an existing one refreshes it instead of being added.
 DUP_COSINE = 0.92
 DUP_WORDS = 0.8
-# Retrieval: below these a card is "not about this claim" and isn't returned.
-MIN_COSINE = 0.35
+# Retrieval floors: below these a card is "not about this claim" and isn't returned.
+MIN_COSINE = 0.40
 MIN_WORDS = 0.12
 
 VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
-EMBED_MODEL = os.environ.get("REIGNS_EMBED_MODEL", "voyage-3.5-lite")
+EMBED_MODEL = os.environ.get("REIGNS_EMBED_MODEL", "voyage-4-lite")
+EMBED_DIM = int(os.environ.get("REIGNS_EMBED_DIM", "512"))  # small = cheap to store/compare
 EMBED_TIMEOUT_S = 4.0
+EMBED_BACKFILL_MAX = 64  # cards embedded lazily per retrieval (older cards made without a key)
 
-# Cheap pre-filter so we don't pay for an LLM call on every "who was X?" question: user facts
-# and constraints nearly always use first person, obligation words, or specific tool/version
-# names.
-_WORTH_EXTRACTING = re.compile(
-    r"\b(i|i'm|im|i've|my|mine|me|we|we're|our|ours|us|must|should|need|needs|don't|do not|"
-    r"never|always|only|can't|cannot|using|use|uses|prefer|limit|budget|deadline|version|v\d)\b",
+# Only skip messages that obviously carry no facts: acknowledgements ("ok thanks") and pure
+# questions with no statement about the user ("who was the first mayor of X?"). Everything
+# else goes to the (fast, cheap) extraction model — the old word-list pre-filter missed plain
+# setup statements like "The server runs Ubuntu 20.04".
+_ACK = re.compile(
+    r"^(?:\W*(?:ok(?:ay)?|k|thanks?(?: you)?|thx|ty|cool|great|nice|got it|sounds good|perfect|"
+    r"yes|no|yep|nope|sure|lol|hm+|continue|go on|next|awesome)\W*)+$",
     re.IGNORECASE,
 )
+_SELF = re.compile(
+    r"\b(i|i'm|im|i've|i'd|my|mine|me|we|we're|our|ours|us|must|need|needs|don't|do not|"
+    r"never|always|only|can't|cannot|should|shouldn't|prefer|require|required|requirement)\b",
+    re.IGNORECASE,
+)
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def worth_extracting(authored: str) -> bool:
+    text = authored.strip()
+    if len(text) < 8 or _ACK.match(text):
+        return False
+    sentences = [x for x in _SENTENCE_END.split(text) if x.strip()]
+    only_questions = all(x.rstrip().endswith("?") for x in sentences)
+    return not (only_questions and not _SELF.search(text))
+
+
+# ---------------------------------------------------------------- pasted vs authored text
+# The companion reads Claude's chat as text, so an attached/pasted file arrives inline. We
+# separate what the user WROTE from what they PASTED by structure, not by length:
+#   - fenced code blocks (``` … ```) and quote blocks (> …)  → pasted
+#   - attachment markers / bare file names ("report.pdf", "[Attached: data.csv]") → recorded
+#     as attachments (the file type is kept, the contents are not memorised)
+#   - long paragraphs that never address anyone (no I/we/you/please/…) → pasted document
+_FENCE = re.compile(r"```.*?(?:```|$)", re.DOTALL)
+_QUOTE_LINE = re.compile(r"^\s*>.*$", re.MULTILINE)
+_FILE_EXT = (
+    r"pdf|docx?|txt|md|rtf|csv|tsv|xlsx?|json|ya?ml|xml|html?|pptx?|py|ipynb|js|ts|tsx|java|"
+    r"c|cpp|h|go|rs|rb|sql|log|png|jpe?g|gif|zip"
+)
+_ATTACHMENT_LINE = re.compile(
+    rf"^\s*(?:\[?(?:attached|attachment|file|pasted(?: content)?)\b[^\n]*|"
+    rf"[\w .()\-]+\.(?:{_FILE_EXT})(?:\s*\(?[\d.,]+\s*(?:kb|mb|lines?)\)?)?)\s*\]?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_ADDRESSING = re.compile(
+    r"\b(i|i'm|my|we|our|us|you|your|please|can you|could you|help|need|want|must)\b",
+    re.IGNORECASE,
+)
+PASTED_PARAGRAPH_CHARS = 700
+
+
+def _addresses(block: str) -> bool:
+    """Does the start or end of a long block speak to/for someone (I, we, you, please…)?"""
+    words = block.split()
+    # Whole words only: slicing by characters can cut "ipsum" into a lone "i" (= "I").
+    return bool(_ADDRESSING.search(" ".join(words[:40] + ["|"] + words[-40:])))
+
+
+def split_authored(text: str) -> tuple[str, list[str]]:
+    """(what the user wrote themselves, attachment names/types found). Pure function."""
+    attachments = [m.group(0).strip(" []") for m in _ATTACHMENT_LINE.finditer(text)]
+    body = _FENCE.sub("\n", text)
+    body = _QUOTE_LINE.sub("", body)
+    body = _ATTACHMENT_LINE.sub("", body)
+    kept = []
+    for para in re.split(r"\n\s*\n", body):
+        para = para.strip()
+        if not para:
+            continue
+        if len(para) > PASTED_PARAGRAPH_CHARS:
+            # "Summarize this: <whole article on the same line>" → keep only the intro.
+            intro = re.match(r"(.{0,300}?:)\s+(.*)", para, re.DOTALL)
+            if (
+                intro
+                and len(intro.group(2)) > PASTED_PARAGRAPH_CHARS
+                and not _addresses(intro.group(2))
+            ):
+                kept.append(intro.group(1))
+                continue
+            if not _addresses(para):
+                continue  # reads like a pasted article/document, not the user talking
+        kept.append(para)
+    authored = "\n\n".join(kept)
+    if len(authored) > AUTHORED_HEAD + AUTHORED_TAIL:
+        authored = authored[:AUTHORED_HEAD] + "\n…\n" + authored[-AUTHORED_TAIL:]
+    return authored, attachments
+
 
 EXTRACT_SYSTEM = """You maintain a short memory of FACTS THE USER STATED in a chat with an AI
 assistant, so the assistant can be checked later for forgetting or contradicting them.
@@ -107,6 +191,9 @@ project, their setup, or rules the answer must follow. Two kinds:
 
 Rules:
 - Only what the USER asserts. Questions are not facts ("what is X?" → nothing).
+- The TASK itself is not a memory: "write a CLI that runs or stops a job", "summarize this",
+  "make it faster" → nothing. Keep only facts/rules that would still matter for FUTURE
+  requests (setup, versions, limits, budgets, deadlines, standing preferences).
 - Each card: one standalone sentence, at most 20 words, understandable without the chat.
 - "subject": 2–5 lowercase words naming WHAT the fact is about ("api rate limit",
   "pandas version") — used to replace old cards when the user changes a fact.
@@ -198,33 +285,62 @@ def word_sim(a: str, b: str) -> float:
 
 
 def similarity(card: MemoryCard, text: str, text_emb: list[float] | None) -> tuple[float, bool]:
-    """(score, used_embeddings). Embedding cosine when both sides have one, else words."""
+    """(score, used_embeddings).
+
+    With embeddings: the better of meaning (cosine) and exact wording (word overlap rescaled
+    onto the cosine scale) — embeddings catch paraphrases ("throttle calls" ≈ "rate limit"),
+    word overlap keeps exact numbers/versions ("3.8", "100") from being washed out.
+    """
+    words = word_sim(card.text, text)
     if text_emb and card.embedding:
-        return cosine(card.embedding, text_emb), True
-    return word_sim(card.text, text), False
+        cos = cosine(card.embedding, text_emb)
+        return max(cos, MIN_COSINE + (words - MIN_WORDS) * 0.6 if words >= MIN_WORDS else 0.0), True
+    return words, False
 
 
 # =============================================================================================
 # Embeddings (FR-L3) — optional; everything works without them
 # =============================================================================================
-async def embed(text: str) -> list[float] | None:
-    """Voyage AI embedding for `text`, or None (no key / error). Never raises."""
+async def embed_many(
+    texts: list[str], input_type: Literal["query", "document"] = "document"
+) -> list[list[float]] | None:
+    """Voyage AI embeddings for several texts in one request, or None (no key / error).
+
+    input_type matters: Voyage embeds a short search text ("query": the AI's claim) and the
+    stored facts ("document": memory cards) slightly differently, which improves matching.
+    Never raises — callers fall back to word overlap.
+    """
     key = os.environ.get("VOYAGE_API_KEY")
-    if not key or not text.strip():
+    items = [t[:4000] for t in texts]
+    if not key or not items or not all(t.strip() for t in items):
         return None
+    body: dict[str, Any] = {"input": items, "model": EMBED_MODEL, "input_type": input_type}
+    if EMBED_DIM:
+        body["output_dimension"] = EMBED_DIM
     try:
         async with httpx.AsyncClient(timeout=EMBED_TIMEOUT_S) as client:
             resp = await client.post(
-                VOYAGE_URL,
-                headers={"Authorization": f"Bearer {key}"},
-                json={"input": [text[:2000]], "model": EMBED_MODEL},
+                VOYAGE_URL, headers={"Authorization": f"Bearer {key}"}, json=body
             )
+            if resp.status_code == 400 and "output_dimension" in body:
+                body.pop("output_dimension")  # model without flexible dimensions
+                resp = await client.post(
+                    VOYAGE_URL, headers={"Authorization": f"Bearer {key}"}, json=body
+                )
             resp.raise_for_status()
-            vec = resp.json()["data"][0]["embedding"]
-            return [float(x) for x in vec]
+            rows = sorted(resp.json()["data"], key=lambda r: r.get("index", 0))
+            return [[float(x) for x in r["embedding"]] for r in rows]
     except Exception as exc:  # noqa: BLE001 — embeddings are optional; fall back to words
         log.warning("embedding failed (falling back to word overlap): %r", exc)
         return None
+
+
+async def embed(
+    text: str, input_type: Literal["query", "document"] = "document"
+) -> list[float] | None:
+    """One embedding (FR-L3; also used by app/learning/store.py for `cases`)."""
+    vecs = await embed_many([text], input_type)
+    return vecs[0] if vecs else None
 
 
 # =============================================================================================
@@ -387,7 +503,7 @@ async def add_card(
     store = store or get_store()
     async with store._lock:  # serialize adds so two turns can't create twin cards
         text = clean_text(text)
-        emb = await embed(text)
+        emb = await embed(text, "document")
         existing = await store.all(user_id)
         now = utc_now_iso()
 
@@ -425,15 +541,17 @@ async def add_card(
 # Extraction
 # =============================================================================================
 async def extract_user_cards(text: str, context: str = "", judge=None) -> list[dict[str, str]]:
-    """LLM (fast model) → [{"kind", "text", "subject"}]. [] when there's nothing durable."""
-    text = text.strip()
-    if not (MIN_USER_TEXT <= len(text) <= MAX_USER_TEXT) or not _WORTH_EXTRACTING.search(text):
+    """LLM (fast model) → [{"kind", "text", "subject"}] from the user's OWN words only."""
+    authored, attachments = split_authored(text)
+    if not worth_extracting(authored):
         return []
     if judge is None:
         if not llm_available():
             return []
         judge = complete_json
-    user = f"USER MESSAGE:\n{text}"
+    user = f"USER MESSAGE:\n{authored}"
+    if attachments:
+        user += f"\n\n(The user also attached/pasted: {', '.join(attachments[:5])} — not shown.)"
     if context:
         user = f"(Earlier the assistant said: {context[:500]})\n\n" + user
     data = await judge(EXTRACT_SYSTEM, user, max_tokens=500, model=fast_model_name())
@@ -543,7 +661,9 @@ async def relevant(
             cards = [c for c in cards if c.kind in kinds]
         if not cards:
             return []
-        emb = await embed(text) if any(c.embedding for c in cards) else None
+        emb = await embed(text, "query")
+        if emb:
+            await _backfill_embeddings(store, cards)
         scored = []
         for c in cards:
             sim, used_emb = similarity(c, text, emb)
@@ -558,6 +678,19 @@ async def relevant(
     except Exception as exc:  # noqa: BLE001
         log.warning("memory.relevant failed: %r", exc)
         return []
+
+
+async def _backfill_embeddings(store: MemoryStore, cards: list[MemoryCard]) -> None:
+    """Cards saved before a Voyage key existed get embedded the first time they're needed."""
+    missing = [c for c in cards if not c.embedding][:EMBED_BACKFILL_MAX]
+    if not missing:
+        return
+    vecs = await embed_many([c.text for c in missing], "document")
+    if not vecs:
+        return
+    for card, vec in zip(missing, vecs):
+        card.embedding = vec
+        await store.upsert(card)
 
 
 async def list_cards(user_id: str, store: MemoryStore | None = None) -> list[MemoryCard]:
@@ -604,17 +737,23 @@ async def ledger_summary(user_id: str, store: MemoryStore | None = None, limit: 
 # Try it by hand:  python -m app.learning.memory "I'm on pandas 1.5 and our API allows 100/min"
 # =============================================================================================
 async def _cli(message: str) -> None:
-    from app.models import ChatMessage
-
-    session = SessionContext(session_id="cli")
-    session.messages.append(ChatMessage(message_id="u1", role="user", text=message, position=0))
-    stored = await on_user_message(session, session.messages[0])
-    print(f"Stored {len(stored)} card(s) for user '{user_id_for(session)}':")
-    for c in stored:
-        print(f"  [{c.kind}] {c.text}   (subject: {c.subject})")
+    authored, attachments = split_authored(message)
+    if attachments or authored.strip() != message.strip():
+        print(f"Your own words: {authored[:200]!r}")
+        print(f"Pasted/attached (not memorised): {attachments or 'a pasted block'}\n")
+    extracted = await extract_user_cards(message)
+    uid = user_id_for(None)
+    print(
+        f"User '{uid}' — embeddings: {'Voyage ' + EMBED_MODEL if os.environ.get('VOYAGE_API_KEY') else 'off (word matching)'}"
+    )
+    for c in extracted:
+        card, action = await add_card(uid, c["kind"], c["text"], c["subject"], "user_message")
+        print(f"  {action:9} [{card.kind}] {card.text}")
+    if not extracted:
+        print("  (nothing worth remembering)")
     print("\nWhole ledger:")
-    for c in await list_cards(user_id_for(session)):
-        print(f"  [{c.kind}] {c.text}")
+    for c in await list_cards(uid):
+        print(f"  [{c.kind}] {c.text}{'  ⟂embedded' if c.embedding else ''}")
 
 
 if __name__ == "__main__":

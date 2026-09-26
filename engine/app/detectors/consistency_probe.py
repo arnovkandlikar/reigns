@@ -63,6 +63,23 @@ TextFn = Callable[..., Awaitable[str]]
 JsonFn = Callable[..., Awaitable[Any]]
 
 
+_REFUSAL = re.compile(
+    r"\b(i (?:don't|do not|can't|cannot|am unable to|'m unable to|'m not able to) "
+    r"(?:have|know|access|determine|answer|say|tell|provide|verify|confirm|find)|"
+    r"(?:without|need|needs|require|requires) (?:more |additional |the |specific |any )*"
+    r"(?:context|information|details|data)|not enough (?:context|information)|"
+    r"(?:no|not) (?:reliable|verifiable|specific) (?:information|record|data)|"
+    r"could you (?:provide|share|clarify)|please (?:provide|share|clarify)|"
+    r"i'm not (?:sure|certain|aware))",
+    re.IGNORECASE,
+)
+
+
+def is_refusal(answer: str) -> bool:
+    """ "I don't have enough context to answer that" and similar non-answers."""
+    return bool(_REFUSAL.search(answer[:300]))
+
+
 def semantic_entropy(group_sizes: list[int]) -> float:
     """Normalized semantic entropy, PRD §8.3. 0 = all agree, 1 = all different."""
     n = sum(group_sizes)
@@ -117,7 +134,7 @@ class ConsistencyProbe(BaseDetector):
         self.sampler: TextFn = sampler or complete_text
         self.judge: JsonFn = judge or complete_json
 
-    async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult:
+    async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
         question = claim.question if is_open_question(claim.question) else None
         question = question or await self.cached(
             session, f"question:{normalize_text(claim.normalized)}", lambda: self._question(claim)
@@ -154,6 +171,15 @@ class ConsistencyProbe(BaseDetector):
                 f"only {len(answers)} of {N_SAMPLES} samples came back"
                 + (f": {reason}" if reason else "")
             )
+
+        # Refusals ("I don't have enough context…") are not answers. Out of context, questions
+        # like "how much faster will it finish?" can't be answered, and counting the refusals
+        # as "Claude never repeated its answer" made the probe cry wolf (live run: "That will
+        # finish about 5x faster" → red). If most samples refuse, the probe abstains.
+        real = [a for a in answers if not is_refusal(a)]
+        if len(real) < MIN_SAMPLES or len(real) < len(answers) / 2:
+            return {"question": question, "abstain": True, "refusals": len(answers) - len(real)}
+        answers = real
 
         numbered = "\n".join(f"[{i}] {a[:300]}" for i, a in enumerate(answers))
         verdict = await self.judge(
@@ -199,7 +225,9 @@ class ConsistencyProbe(BaseDetector):
         raise last or LLMError("sample failed")
 
     # ------------------------------------------------------------------ verdict
-    def _to_result(self, data: dict[str, Any]) -> DetectorResult:
+    def _to_result(self, data: dict[str, Any]) -> DetectorResult | None:
+        if data.get("abstain"):
+            return None  # the question can't be answered out of context → nothing to say
         answers, groups = data["answers"], data["groups"]
         n = len(answers)
         sizes = [len(g) for g in groups]

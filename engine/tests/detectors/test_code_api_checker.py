@@ -72,7 +72,10 @@ async def test_code_api_scenario(load_scenario, checker, session):
         ("from requests import get\nget('u', retries=3)", "no 'retries'"),
         ("import requests\ns = requests.Session()\ns.get('u', max_retries=2)", "max_retries"),
         ("import os\nos.path.joinpath('a', 'b')", "no 'joinpath'"),
-        ("from pathlib import Path\np = Path('a')\np.read_text(encodings='utf8')", "no 'encodings'"),
+        (
+            "from pathlib import Path\np = Path('a')\np.read_text(encodings='utf8')",
+            "no 'encodings'",
+        ),
         # no **kwargs on model_validate → a made-up keyword is caught
         (
             "from pydantic import BaseModel\nBaseModel.model_validate({}, anything_goes=1)",
@@ -201,3 +204,9 @@ def test_compact_sig_and_suggest():
     assert compact_sig("f", inspect.signature(f)) == "f(a, b, *, c, **kw)"
     assert suggest("seperator", {"sep", "delimiter", "iterator"})[0] == "sep"
     assert suggest("normalize", ["norm", "solve"]) == ["norm"]
+
+
+async def test_nothing_to_inspect_stays_silent(checker, session):
+    """Only stdlib builtins/`import sys` → no result at all (was a filler 'unverified')."""
+    code = "import sys\nmatch sys.argv[1]:\n    case 'run':\n        print('ok')\n"
+    assert await checker.check(claim(code), session) is None
