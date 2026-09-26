@@ -103,12 +103,13 @@ def test_full_mode_reads_whole_bubble(monkeypatch):
     assert voice.line_for(2, 2, full_bubble(), False, {"c1", "c2"}) is None
     assert voice.line_for(2, 2, full_bubble(ids=("c1", "c3")), False, {"c1", "c2"})
     assert voice.line_for(0, 0, full_bubble(level=0), False) is None
-    # long bubbles are capped
+    # long bubbles: every problem is still read; the long pattern line is what gets dropped
     many = full_bubble(ids=[f"c{i}" for i in range(10)])
     many.pattern_text = " ".join(["word"] * 100)
     capped = voice.line_for(0, 2, many, False)
-    assert len(capped.split()) <= voice.FULL_MAX_WORDS
-    assert capped.endswith(".") and "word word" not in capped  # stops at a sentence end
+    assert len(capped.split()) <= voice.full_budget(10)
+    assert all(f"Problem c{i} does not check out." in capped for i in range(10))
+    assert capped.endswith(".") and "word word" not in capped
 
 
 async def test_full_mode_does_not_repeat_itself(api, monkeypatch):
@@ -196,7 +197,7 @@ async def test_long_llm_summary_is_trimmed_to_whole_sentences(api, monkeypatch):
     monkeypatch.setattr(llm, "llm_available", lambda: True)
     monkeypatch.setattr(llm, "complete_text", chatty)
     vp = await voice.maybe_speak(voice.VoiceState(), 0, 2, full_bubble(), False, now=0.0)
-    assert len(vp.text.split()) <= voice.SUMMARY_HARD_CAP and vp.text.endswith(".")
+    assert len(vp.text.split()) <= voice.summary_hard_cap(2) and vp.text.endswith(".")
 
 
 def test_summary_input_gives_evidence_source_and_next_step():
@@ -211,10 +212,92 @@ def test_summary_input_gives_evidence_source_and_next_step():
     assert "IN YOUR OWN WORDS" in voice._SUMMARY_RULES
 
 
-def test_bubble_fallback_mentions_extra_problems_without_cutting_off():
-    many = full_bubble(ids=[f"c{i}" for i in range(6)])
+SIX = [("p1", "The paper 'Deep Hive Networks' by Lee does not exist"),
+       ("p2", "The paper 'Swarm Transformers' by Ortiz does not exist"),
+       ("d1", "The Eiffel Tower was finished in 1889, not 1899"),
+       ("d2", "The Berlin Wall fell in 1989, not 1991"),
+       ("d3", "The Moon landing was in 1969, not 1972"),
+       ("u1", "The link example.org/dataset is broken")]
+
+
+def six_bubble():
+    return BubbleContent(level=3, headline="Several claims don't check out",
+                         problems=[BubbleProblem(claim_id=c, text=t) for c, t in SIX],
+                         pattern_text="Claude is guessing on dates and sources in this chat")
+
+
+def test_bubble_fallback_reads_every_problem():
+    line = voice.full_line(six_bubble())
+    for _, text in SIX:
+        assert text in line  # each problem said in full, none dropped
+    assert "bit more" not in line and "more problems" not in line
+    assert len(line.split()) <= voice.full_budget(6) and line.endswith(".")
+    # and a very long list still names every problem, just more briefly
+    many = BubbleContent(level=4, headline="Lots of problems", problems=[
+        BubbleProblem(claim_id=f"x{i}", text=f"Claim number {i} about topic {i} is contradicted by "
+                      "the evidence found on Wikipedia and two other sources") for i in range(12)])
     line = voice.full_line(many)
-    assert line.endswith("There's a bit more in the bubble.")
+    assert all(f"Claim number {i} " in line for i in range(12))
+    assert len(line.split()) <= voice.full_budget(12)
+
+
+def test_word_budget_grows_with_problems():
+    assert voice.summary_budget(1) == voice.summary_budget(3) == 50
+    assert voice.summary_budget(6) == 95 and voice.summary_budget(50) == voice.SUMMARY_MAX_CAP
+    assert voice.full_budget(3) == 55 and voice.full_budget(6) == 100
+    assert voice.summary_hard_cap(6) == 120
+
+
+async def test_summary_covers_all_six_problems(api, monkeypatch):
+    from app import llm
+
+    seen = {}
+    spoken = ("Hold your horses. Claude made up two papers, 'Deep Hive Networks' and 'Swarm "
+              "Transformers'. It also got three dates wrong: the Eiffel Tower was finished in "
+              "1889, the Berlin Wall fell in 1989, and the Moon landing was in 1969. On top of that, "
+              "the example.org dataset link is broken. It's guessing on dates and sources, so ask "
+              "it to check each of these against a real source before you use any of it.")
+
+    async def fake(system, user, **kw):
+        seen["user"], seen["max_tokens"] = user, kw.get("max_tokens")
+        return spoken
+
+    monkeypatch.setenv("REIGNS_VOICE_STYLE", "cowboy")
+    monkeypatch.setattr(llm, "llm_available", lambda: True)
+    monkeypatch.setattr(llm, "complete_text", fake)
+    vp = await voice.maybe_speak(voice.VoiceState(), 0, 3, six_bubble(), False, now=0.0)
+    # the model is told the bigger budget and to cover all 6, and gets all 6
+    assert "About 95 words" in seen["user"] and "EVERY one of the 6" in seen["user"]
+    assert all(f"Problem: {text}" in seen["user"] for _, text in SIX)
+    assert seen["max_tokens"] >= 600
+    # the ~75-word answer is spoken whole, not clipped at the old 75-word cap
+    assert vp.text == spoken
+    for word in ("Deep Hive", "Swarm", "1889", "1989", "1969", "example.org"):
+        assert word in vp.text
+
+
+async def test_spanish_long_summary_is_not_cut(api, monkeypatch):
+    from app import llm
+
+    seen = {}
+    spoken = ("¡Epa, compañero! Claude inventó dos artículos, 'Deep Hive Networks' y 'Swarm "
+              "Transformers', y se equivocó en tres fechas: la Torre Eiffel se terminó en 1889, el "
+              "Muro de Berlín cayó en 1989 y la llegada a la Luna fue en 1969. Además, el enlace "
+              "de example.org está roto. Pídele que revise cada dato con una fuente real antes de "
+              "usarlo.")
+
+    async def fake(system, user, **kw):
+        seen["user"] = user
+        return spoken
+
+    monkeypatch.setenv("REIGNS_VOICE_STYLE", "cowboy")
+    monkeypatch.setattr(llm, "llm_available", lambda: True)
+    monkeypatch.setattr(llm, "complete_text", fake)
+    vp = await voice.maybe_speak(voice.VoiceState(), 0, 3, six_bubble(), False, now=0.0, lang="es")
+    assert "Latin American Spanish" in seen["user"] and "EVERY one of the 6" in seen["user"]
+    assert vp.text == spoken
+    # Spanish fallback (no summary) still counts all six, in Spanish
+    assert "Encontré 6 problemas" in voice.spanish_fallback(six_bubble())
 
 
 def test_openers_and_praise_never_repeat_back_to_back(monkeypatch):
