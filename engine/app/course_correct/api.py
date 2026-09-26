@@ -1,15 +1,15 @@
-"""Course Correct diagnosis and correction prompts (PRD FR-D1–FR-D4).
-
-The signatures in §12.5 are synchronous, so diagnosis stays local and deterministic. It uses
-verdicts and claim relationships already present in the session; it never makes a network call.
-"""
+"""Course Correct diagnosis and correction prompts (PRD FR-D1–FR-D4, FR-L2)."""
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 import uuid
 
+from app.course_correct.bandit import choose_variant
 from app.detectors.base import content_words, snippet
+from app.llm import LLMError, complete_json, fast_model_name, llm_available
 from app.models import (
     BubbleContent,
     BubbleProblem,
@@ -20,6 +20,8 @@ from app.models import (
     RootCause,
     SessionContext,
 )
+
+log = logging.getLogger("reigns.course_correct")
 
 _PROMPT_TYPES = {
     1: "verify_nudge",
@@ -131,11 +133,7 @@ def _root_cause(verdict: ClaimVerdict) -> str:
 
 
 def _dependency_links(session: SessionContext, failures: list[ClaimVerdict]) -> list[str]:
-    """Find likely later dependencies by meaningful term overlap in the available ledger.
-
-    §12.5 requires diagnose() to be synchronous. Keep this bounded local pass deterministic;
-    ambiguous dependencies are not asserted as certain.
-    """
+    """Conservative local fallback when the judge is unavailable."""
     ordered_claims = sorted(
         enumerate(session.claims.values()), key=lambda pair: (_position(session, pair[1]), pair[0])
     )
@@ -167,8 +165,89 @@ def _dependency_links(session: SessionContext, failures: list[ClaimVerdict]) -> 
     return sorted(links)
 
 
-def diagnose(session: SessionContext) -> DriftProfile:
-    """Build a local drift profile from active red/amber verdicts (PRD §12.5, FR-D1)."""
+async def _judged_dependency_links(
+    session: SessionContext, failures: list[ClaimVerdict]
+) -> list[str]:
+    """Ask the shared judge which later claims actually rely on failed claims."""
+    if not failures:
+        return []
+    ordered = sorted(
+        enumerate(session.claims.values()), key=lambda pair: (_position(session, pair[1]), pair[0])
+    )
+    order_by_id = {claim.claim_id: index for index, (_original, claim) in enumerate(ordered)}
+    failed_ids = {verdict.claim_id for verdict in failures}
+    first_failure = min(
+        (order_by_id[i] for i in failed_ids if i in order_by_id), default=len(ordered)
+    )
+    candidates = [
+        claim
+        for index, (_original, claim) in enumerate(ordered)
+        if index > first_failure and claim.claim_id not in failed_ids
+    ]
+    if not candidates:
+        return []
+    cache_key = (
+        "course_correct:dependencies:"
+        + ",".join(sorted(failed_ids))
+        + ":"
+        + ",".join(claim.claim_id for claim in candidates)
+    )
+    cached = session.cache.get(cache_key)
+    if isinstance(cached, list):
+        return cached
+    if not llm_available():
+        return _dependency_links(session, failures)
+
+    failed_lines = [
+        {
+            "claim_id": v.claim_id,
+            "order": order_by_id[v.claim_id],
+            "claim": _clip(session.claims[v.claim_id].normalized, 240),
+        }
+        for v in failures
+        if v.claim_id in session.claims
+    ]
+    later_lines = [
+        {
+            "claim_id": claim.claim_id,
+            "order": order_by_id[claim.claim_id],
+            "claim": _clip(claim.normalized, 240),
+        }
+        for claim in candidates
+    ]
+    try:
+        judged = await asyncio.wait_for(
+            complete_json(
+                "You judge claim dependencies in a conversation ledger. A later claim depends "
+                "on a failed claim only if the later claim needs that failed claim to be true. "
+                "Shared words or related topics alone are not dependence. Return JSON with "
+                "dependent_claim_ids, an array of IDs from later_claims only. Be conservative.",
+                f"Failed claims: {failed_lines}\nLater claims: {later_lines}",
+                temperature=0,
+                max_tokens=400,
+                model=fast_model_name(),
+            ),
+            timeout=2.8,
+        )
+    except (LLMError, TimeoutError) as exc:
+        log.warning("dependency judge unavailable; using local fallback: %s", exc)
+        return _dependency_links(session, failures)
+    if not isinstance(judged, dict) or not isinstance(judged.get("dependent_claim_ids"), list):
+        return _dependency_links(session, failures)
+    candidate_ids = {claim.claim_id for claim in candidates}
+    links = sorted(
+        {
+            value
+            for value in judged["dependent_claim_ids"]
+            if isinstance(value, str) and value in candidate_ids
+        }
+    )
+    session.cache[cache_key] = links
+    return links
+
+
+async def diagnose(session: SessionContext) -> DriftProfile:
+    """Build a drift profile using an LLM judge for the blast radius (FR-D1)."""
     failures = _flagged(session)
     causes: list[RootCause] = []
     for verdict in failures:
@@ -176,7 +255,7 @@ def diagnose(session: SessionContext) -> DriftProfile:
         if cause not in causes:
             causes.append(cause)  # type: ignore[arg-type]
 
-    blast_radius = _dependency_links(session, failures)
+    blast_radius = await _judged_dependency_links(session, failures)
     if blast_radius and "anchored_wrong_assumption" not in causes:
         causes.insert(0, "anchored_wrong_assumption")
 
@@ -235,12 +314,20 @@ def _correction_text(
     profile: DriftProfile,
     flagged: list[ClaimVerdict],
     session: SessionContext,
+    variant: str,
 ) -> str:
     pattern, redo = _pattern(profile.root_causes)
     issue_lines = []
     for index, verdict in enumerate(flagged[:3], start=1):
         evidence = _evidence_summary(verdict)
-        issue_lines.append(f"{index}. “{verdict.quote}” — evidence: “{evidence}”")
+        if variant == "v2":
+            issue_lines.append(
+                f"{index}. Does “{verdict.quote}” hold up? The check found: “{evidence}”"
+            )
+        elif variant == "v3":
+            issue_lines.append(f"{index}. [ ] Recheck “{verdict.quote}” against “{evidence}”")
+        else:
+            issue_lines.append(f"{index}. “{verdict.quote}” — evidence: “{evidence}”")
     issues = "\n".join(issue_lines) or "No active flagged claim is available to recheck."
     target_ids = list(dict.fromkeys(profile.failures + profile.blast_radius))
     source_claims = [session.claims[cid] for cid in target_ids if cid in session.claims]
@@ -251,16 +338,22 @@ def _correction_text(
     # FR-D2: each level keeps all five required parts, with the requested level-specific length.
     if level == 1:
         first_issue = issue_lines[0] if issue_lines else target
+        opening = {
+            "v1": "Please check",
+            "v2": "Could you verify",
+            "v3": "Quick checklist: verify",
+        }[variant]
         return (
-            f"Please check {first_issue}; the pattern appears to be {pattern.lower()} "
+            f"{opening} {first_issue}; the pattern appears to be {pattern.lower()} "
             f"Recheck only {target}; use evidence for the rest of this chat, mark factual claims "
             "[verified] or [unverified], and say ‘I don't know’ if unsure—keep your original "
             "answer if the evidence supports it."
         )
 
     if level == 2:
+        opening = "Quick checklist of what to recheck:\n" if variant == "v3" else ""
         return (
-            f"What's wrong and the evidence:\n{issues}\n\n"
+            f"{opening}What's wrong and the evidence:\n{issues}\n\n"
             f"Pattern: {pattern}\n\nRedo only this: {redo} Target: {target}.\n\n"
             "For the rest of this chat, use evidence for factual claims. Mark each claim "
             "[verified] or [unverified]; it is fine to say ‘I don't know’. If the evidence supports "
@@ -268,8 +361,13 @@ def _correction_text(
         )
 
     if level == 3:
+        opening = (
+            "Work through this checklist:\n"
+            if variant == "v3"
+            else ("First ask what the evidence actually establishes.\n" if variant == "v2" else "")
+        )
         return (
-            "I want to pause and correct the specific issues below.\n\n"
+            f"{opening}I want to pause and correct the specific issues below.\n\n"
             f"What's wrong and the evidence:\n{issues}\n\n"
             f"Pattern: {pattern} Redo only this: {redo} Target: {target}.\n\n"
             "Going forward, use evidence for factual claims and avoid building later steps on an "
@@ -279,7 +377,9 @@ def _correction_text(
 
     return (
         "Start a fresh chat with this handoff:\n"
-        f"- Goal: continue the user's original task, rechecking {target}.\n"
+        + ("- First question: what does the evidence establish?\n" if variant == "v2" else "")
+        + ("- Checklist for the new chat:\n" if variant == "v3" else "")
+        + f"- Goal: continue the user's original task, rechecking {target}.\n"
         f"- Problems and evidence:\n{issues}\n"
         f"- Pattern: {pattern}\n"
         f"- Recheck: {redo}\n"
@@ -289,7 +389,7 @@ def _correction_text(
     )
 
 
-def build_bubble(level: int, profile: DriftProfile, session: SessionContext) -> BubbleContent:
+async def build_bubble(level: int, profile: DriftProfile, session: SessionContext) -> BubbleContent:
     """Create the level-matched plain-English bubble and correction (PRD FR-D2–FR-D4)."""
     level = max(0, min(4, int(level)))
     flagged = [
@@ -351,11 +451,15 @@ def build_bubble(level: int, profile: DriftProfile, session: SessionContext) -> 
 
     correction = None
     if level >= 1 and flagged:
+        failure_type = causes[0] if causes else "knowledge_gap"
+        prompt_type = _PROMPT_TYPES[level]
+        variant, variant_id = await choose_variant(failure_type, prompt_type)
         correction = Correction(
             correction_id=str(uuid.uuid4()),
-            prompt_type=_PROMPT_TYPES[level],
-            text=_correction_text(level, profile, flagged, session),
+            prompt_type=prompt_type,
+            text=_correction_text(level, profile, flagged, session, variant),
         )
+        session.cache[f"course_correct:variant:{correction.correction_id}"] = variant_id
 
     action = {
         0: "",
