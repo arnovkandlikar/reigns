@@ -1,8 +1,28 @@
 import SwiftUI
 
+/// FR-A6 expressions (§10). Driven only by heat.update: `level`, plus `recovered` for 3 s after a
+/// verified fix.
+enum PetExpression: Equatable {
+    case calm, curious, concerned, alarmed, meltdown, recovered
+
+    init(level: Int, recovered: Bool) {
+        if recovered {
+            self = .recovered
+            return
+        }
+        switch level {
+        case ..<1: self = .calm
+        case 1: self = .curious
+        case 2: self = .concerned
+        case 3: self = .alarmed
+        default: self = .meltdown
+        }
+    }
+}
+
 /// The horse peeks up from the bottom edge (Snapchat-Bitmoji style). The panel's bottom edge is the
-/// "floor": the horse is drawn below it and clipped, and rises further with each level (FR-A6).
-/// Eyes, eyebrows and mouth are separate views so expressions can swap them independently.
+/// "floor": the horse is drawn below it and clipped, and rises further with each level.
+/// Eyes, eyebrows and mouth are separate views so each expression swaps them independently.
 struct PetView: View {
     let model: PetViewModel
 
@@ -15,57 +35,150 @@ struct PetView: View {
     }
 
     /// Height of the visible part of the horse above the floor, in screen points.
-    static func visibleHeight(level: Int) -> CGFloat {
-        baseVisibleHeight(level: level) * scale
+    static func visibleHeight(level: Int, recovered: Bool = false) -> CGFloat {
+        baseVisibleHeight(PetExpression(level: level, recovered: recovered)) * scale
     }
 
     /// How much of the horse (from its ear tips down, in base points) shows above the floor.
-    private static func baseVisibleHeight(level: Int) -> CGFloat {
-        switch level {
-        case ..<1: return 44   // Calm: ears + eyes
-        case 1: return 54      // Curious
-        case 2: return 64      // Concerned: down to the muzzle
-        case 3: return 76      // Alarmed
-        default: return baseHorseSize.height  // Meltdown: fully out
+    private static func baseVisibleHeight(_ expression: PetExpression) -> CGFloat {
+        switch expression {
+        case .calm: return 44       // ears + eyes
+        case .curious: return 54
+        case .concerned: return 64  // down to the muzzle
+        case .alarmed: return 80    // far enough out to show the open "O" mouth
+        case .meltdown, .recovered: return baseHorseSize.height  // fully out
         }
     }
 
+    /// Extra room above the horse's visible top that accessories use (the Meltdown sign), so the
+    /// bubble opens above them.
+    static func accessoryClearance(level: Int, recovered: Bool = false) -> CGFloat {
+        PetExpression(level: level, recovered: recovered) == .meltdown ? 16 * scale : 0
+    }
+
+    private var expression: PetExpression {
+        PetExpression(level: model.level, recovered: model.isRecovered)
+    }
+
     var body: some View {
-        HorseFace()
-            .frame(width: Self.baseHorseSize.width, height: Self.baseHorseSize.height)
-            .overlay(alignment: .topTrailing) {
-                HeatBadge(heat: model.heat).offset(x: 14, y: -2)
-            }
-            .scaleEffect(Self.scale)
-            .frame(width: Self.horseSize.width, height: Self.horseSize.height)
-            .offset(y: (Self.baseHorseSize.height - Self.baseVisibleHeight(level: model.level)) * Self.scale)
-            .animation(.spring(response: 0.45, dampingFraction: 0.65), value: model.level)
-            .frame(width: Self.panelSize.width, height: Self.panelSize.height, alignment: .bottom)
-            .clipped()
+        // Continuous motion (breathing, blinking, fidgeting, shaking, hopping) is a function of time;
+        // expression changes animate with a spring (see PetPanelController).
+        TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
+            let motion = HorseMotion(expression: expression, time: timeline.date.timeIntervalSinceReferenceDate)
+            HorseFace(expression: expression, motion: motion)
+                .frame(width: Self.baseHorseSize.width, height: Self.baseHorseSize.height)
+                .overlay {
+                    Accessories(expression: expression, unverified: model.unverifiedCount,
+                                time: timeline.date.timeIntervalSinceReferenceDate)
+                }
+                .overlay(alignment: .topTrailing) {
+                    HeatBadge(heat: model.heat).offset(x: 14, y: -2)
+                }
+                .scaleEffect(x: 1, y: motion.breath, anchor: .bottom)
+                .rotationEffect(motion.tilt, anchor: .bottom)
+                .offset(x: motion.dx, y: motion.dy)
+                .scaleEffect(Self.scale)
+                .frame(width: Self.horseSize.width, height: Self.horseSize.height)
+                .offset(y: (Self.baseHorseSize.height - Self.baseVisibleHeight(expression)) * Self.scale)
+        }
+        .frame(width: Self.panelSize.width, height: Self.panelSize.height, alignment: .bottom)
+        .clipped()
     }
 }
 
-private enum HorsePalette {
-    static let coat = Color(red: 0.55, green: 0.34, blue: 0.20)
+// MARK: - Motion
+
+/// Per-frame motion for an expression (§10 "Action" column), in base points.
+private struct HorseMotion {
+    var dx: CGFloat = 0
+    var dy: CGFloat = 0
+    var tilt: Angle = .zero
+    var breath: CGFloat = 1
+    /// 0 = closed, 1 = open (Calm blinks every 4 s).
+    var eyeOpenness: CGFloat = 1
+    var spiralSpin: Angle = .zero
+
+    init(expression: PetExpression, time t: TimeInterval) {
+        func wave(_ period: Double) -> CGFloat { CGFloat(sin(2 * .pi * t / period)) }
+
+        switch expression {
+        case .calm:
+            breath = 1 + 0.015 * wave(3.5)  // gentle breathing
+            let phase = t.truncatingRemainder(dividingBy: 4)
+            if phase < 0.16 {  // quick blink
+                eyeOpenness = max(0.1, CGFloat(abs(phase - 0.08) / 0.08))
+            }
+        case .curious:
+            // Tilt away from the heat badge (top-right) so it stays on screen (FR-A7).
+            tilt = .degrees(-7 + 1.5 * Double(wave(2.8)))  // head tilt with a little sway
+        case .concerned:
+            let phase = t.truncatingRemainder(dividingBy: 2.5)
+            if phase < 0.8 { dx = 1.4 * CGFloat(sin(2 * .pi * phase * 4)) }  // fidget in bursts
+        case .alarmed:
+            dx = 0.8 * wave(0.11)  // trembling
+        case .meltdown:
+            dx = 3 * wave(0.5)  // steady side-to-side sway
+            spiralSpin = .degrees(t.truncatingRemainder(dividingBy: 1.2) / 1.2 * 360)
+        case .recovered:
+            dy = -8 * abs(CGFloat(sin(.pi * t * 2.2)))  // happy hop
+        }
+    }
+}
+
+// MARK: - Face
+
+/// Coat colours per expression (face, eyebrows and mouth stay dark so the face stays legible).
+private struct HorsePalette {
     static let mane = Color(red: 0.22, green: 0.13, blue: 0.08)
-    static let muzzle = Color(red: 0.80, green: 0.64, blue: 0.50)
-    static let innerEar = Color(red: 0.85, green: 0.62, blue: 0.55)
+
+    let coat: Color
+    let muzzle: Color
+    let innerEar: Color
+
+    init(_ expression: PetExpression) {
+        switch expression {
+        case .calm, .recovered:  // brown
+            coat = Color(red: 0.55, green: 0.34, blue: 0.20)
+            muzzle = Color(red: 0.80, green: 0.64, blue: 0.50)
+            innerEar = Color(red: 0.85, green: 0.62, blue: 0.55)
+        case .curious:  // lighter brown
+            coat = Color(red: 0.74, green: 0.54, blue: 0.37)
+            muzzle = Color(red: 0.91, green: 0.80, blue: 0.68)
+            innerEar = Color(red: 0.93, green: 0.72, blue: 0.66)
+        case .concerned:  // blue
+            coat = Color(red: 0.30, green: 0.50, blue: 0.82)
+            muzzle = Color(red: 0.70, green: 0.82, blue: 0.96)
+            innerEar = Color(red: 0.62, green: 0.74, blue: 0.95)
+        case .alarmed:  // yellow
+            coat = Color(red: 0.96, green: 0.78, blue: 0.20)
+            muzzle = Color(red: 1.00, green: 0.93, blue: 0.66)
+            innerEar = Color(red: 1.00, green: 0.86, blue: 0.55)
+        case .meltdown:  // red
+            coat = Color(red: 0.86, green: 0.22, blue: 0.20)
+            muzzle = Color(red: 0.98, green: 0.68, blue: 0.62)
+            innerEar = Color(red: 0.98, green: 0.60, blue: 0.56)
+        }
+    }
 }
 
 /// Drawn in a 64×84 frame with the ear tips at the top edge.
 private struct HorseFace: View {
+    let expression: PetExpression
+    let motion: HorseMotion
+
     var body: some View {
+        let palette = HorsePalette(expression)
         ZStack {
             // Ears sit behind the head.
             HStack(spacing: 18) {
-                Ear()
-                Ear()
+                Ear(palette: palette)
+                Ear(palette: palette)
             }
             .offset(y: -33)
 
             // Head: tall rounded shape.
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(HorsePalette.coat)
+                .fill(palette.coat)
                 .frame(width: 46, height: 70)
                 .offset(y: 6)
 
@@ -77,7 +190,7 @@ private struct HorseFace: View {
 
             // Muzzle with nostrils.
             Ellipse()
-                .fill(HorsePalette.muzzle)
+                .fill(palette.muzzle)
                 .frame(width: 42, height: 28)
                 .offset(y: 26)
             HStack(spacing: 14) {
@@ -86,17 +199,21 @@ private struct HorseFace: View {
             }
             .offset(y: 24)
 
-            HorseMouth().offset(y: 34)
+            Mouth(expression: expression).offset(y: 34)
 
             HStack(spacing: 18) {
-                Eye()
-                Eye()
+                Eye(expression: expression, isRight: false, openness: motion.eyeOpenness, spin: motion.spiralSpin,
+                    lid: palette.coat)
+                    .frame(width: 13, height: 13)
+                Eye(expression: expression, isRight: true, openness: motion.eyeOpenness, spin: motion.spiralSpin,
+                    lid: palette.coat)
+                    .frame(width: 13, height: 13)
             }
             .offset(y: -6)
 
             HStack(spacing: 18) {
-                Eyebrow()
-                Eyebrow()
+                Eyebrow(expression: expression, isRight: false)
+                Eyebrow(expression: expression, isRight: true)
             }
             .offset(y: -16)
         }
@@ -104,27 +221,113 @@ private struct HorseFace: View {
 }
 
 private struct Ear: View {
+    let palette: HorsePalette
+
     var body: some View {
         ZStack {
-            Triangle().fill(HorsePalette.coat).frame(width: 14, height: 18)
-            Triangle().fill(HorsePalette.innerEar).frame(width: 7, height: 10).offset(y: 3)
+            Triangle().fill(palette.coat).frame(width: 14, height: 18)
+            Triangle().fill(palette.innerEar).frame(width: 7, height: 10).offset(y: 3)
         }
     }
 }
 
 private struct Eye: View {
+    let expression: PetExpression
+    let isRight: Bool
+    let openness: CGFloat
+    let spin: Angle
+    /// Coat colour, for the Concerned eyelid.
+    let lid: Color
+
     var body: some View {
-        ZStack {
-            Circle().fill(Color.white).frame(width: 13, height: 13)
-            Circle().fill(Color.black).frame(width: 7, height: 7)
-            Circle().fill(Color.white).frame(width: 2.5, height: 2.5).offset(x: 1.5, y: -1.5)
+        switch expression {
+        case .recovered:
+            // Happy closed eyes: "∩" arcs.
+            HappyArc()
+                .stroke(HorsePalette.mane, style: StrokeStyle(lineWidth: 2.2, lineCap: .round))
+                .frame(width: 12, height: 6)
+        case .meltdown:
+            ZStack {
+                Circle().fill(Color.white).frame(width: 15, height: 15)
+                Spiral()
+                    .stroke(Color.black, style: StrokeStyle(lineWidth: 1.3, lineCap: .round))
+                    .frame(width: 12, height: 12)
+                    .rotationEffect(isRight ? spin : -spin)
+            }
+        default:
+            let size = eyeSize
+            ZStack {
+                Circle().fill(Color.white)
+                Circle().fill(Color.black).frame(width: pupilSize, height: pupilSize).offset(look)
+                Circle().fill(Color.white).frame(width: 2.5, height: 2.5)
+                    .offset(x: look.width + 1.5, y: look.height - 1.5)
+            }
+            .frame(width: size, height: size)
+            .overlay(alignment: .top) {
+                // Concerned: heavy upper lid (narrowed, side-eye).
+                if expression == .concerned {
+                    Rectangle().fill(lid).frame(height: size * 0.42)
+                }
+            }
+            .clipShape(Circle())
+            .scaleEffect(x: 1, y: openness)
+        }
+    }
+
+    private var eyeSize: CGFloat {
+        switch expression {
+        case .alarmed: return 16
+        case .curious: return isRight ? 15.5 : 13  // one eye slightly larger
+        default: return 13
+        }
+    }
+
+    private var pupilSize: CGFloat { expression == .alarmed ? 4.5 : 7 }
+
+    /// Where the pupils look.
+    private var look: CGSize {
+        switch expression {
+        case .curious: return CGSize(width: 1, height: -1.5)
+        case .concerned: return CGSize(width: 3, height: 1)  // side-eye
+        default: return .zero
         }
     }
 }
 
 private struct Eyebrow: View {
+    let expression: PetExpression
+    let isRight: Bool
+
     var body: some View {
-        Capsule().fill(HorsePalette.mane).frame(width: 10, height: 2.5)
+        Capsule()
+            .fill(HorsePalette.mane)
+            .frame(width: 10, height: expression == .meltdown ? 3.2 : 2.5)
+            .rotationEffect(.degrees(isRight ? -angle : angle))
+            .offset(y: lift)
+    }
+
+    /// Positive lowers the inner end (knitted); negative raises it (worried/surprised).
+    private var angle: Double {
+        switch expression {
+        case .calm: return 0
+        case .curious: return isRight ? 8 : 0
+        case .concerned: return 18
+        case .alarmed: return -10
+        case .meltdown: return -28
+        case .recovered: return -6
+        }
+    }
+
+    /// Vertical offset from the resting position (negative = higher).
+    private var lift: CGFloat {
+        switch expression {
+        case .calm: return 0
+        case .curious: return isRight ? -5 : 0  // one raised
+        case .concerned: return 1
+        case .alarmed: return -5
+        case .meltdown: return -6
+        case .recovered: return -4
+        }
     }
 }
 
@@ -134,15 +337,238 @@ private struct Nostril: View {
     }
 }
 
-/// Calm: small smile.
-private struct HorseMouth: View {
+private struct Mouth: View {
+    let expression: PetExpression
+
     var body: some View {
-        Path { p in
-            p.move(to: CGPoint(x: 0, y: 0))
-            p.addQuadCurve(to: CGPoint(x: 14, y: 0), control: CGPoint(x: 7, y: 5))
+        switch expression {
+        case .calm:
+            Smile().stroke(HorsePalette.mane, style: stroke).frame(width: 14, height: 5)
+        case .curious:
+            Capsule().fill(HorsePalette.mane).frame(width: 10, height: 1.8)
+        case .concerned:
+            Capsule().fill(HorsePalette.mane).frame(width: 16, height: 1.8)
+        case .alarmed:
+            Ellipse().fill(HorsePalette.mane).frame(width: 8, height: 10)  // open "O"
+        case .meltdown:
+            Wave().stroke(HorsePalette.mane, style: stroke).frame(width: 18, height: 4)
+        case .recovered:
+            Grin().fill(HorsePalette.mane).frame(width: 20, height: 9)
         }
-        .stroke(HorsePalette.mane, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
-        .frame(width: 14, height: 5)
+    }
+
+    private var stroke: StrokeStyle { StrokeStyle(lineWidth: 1.8, lineCap: .round) }
+}
+
+// MARK: - Accessories (FR-A7)
+
+/// Laid out in the horse's 64×84 frame (0,0 = top-left, ear tips at the top). The panel leaves 16
+/// points either side and 20 above the fully-risen horse, which is where these sit.
+private struct Accessories: View {
+    let expression: PetExpression
+    let unverified: Int
+    let time: TimeInterval
+
+    var body: some View {
+        ZStack {
+            if expression == .curious || expression == .concerned {
+                // Inset enough that Curious' head tilt keeps it on screen.
+                QuestionBadge(count: unverified).position(x: 10, y: 12)
+            }
+            if expression == .alarmed || expression == .meltdown {
+                RedFlag(time: time).frame(width: 16, height: 54).position(x: -6, y: 32)
+                SweatDrop(time: time).position(x: 57, y: 27)
+            }
+            if expression == .meltdown {
+                // Snorting steam from the nostrils, drifting outward.
+                Steam(time: time, side: -1).position(x: 25, y: 60)
+                Steam(time: time, side: 1).position(x: 39, y: 60)
+                StartFreshSign(time: time).position(x: 27, y: -9)
+            }
+        }
+        .frame(width: 64, height: 84)
+    }
+}
+
+/// "?" with the number of claims the engine couldn't confirm (levels 1–2).
+private struct QuestionBadge: View {
+    let count: Int
+
+    var body: some View {
+        Text(count > 0 ? "? \(count)" : "?")
+            .font(.system(size: 10, weight: .heavy, design: .rounded))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(Capsule().fill(Color.orange))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.8), lineWidth: 0.8))
+    }
+}
+
+private struct RedFlag: View {
+    let time: TimeInterval
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Capsule().fill(Color(white: 0.35)).frame(width: 1.8)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            WavingFlag(phase: time * 2 * .pi * 1.6)
+                .fill(Color.red)
+                .frame(width: 14, height: 10)
+                .offset(x: -1.5, y: 1)
+        }
+    }
+}
+
+/// Flag attached at its right edge (the pole) with a travelling wave toward the free left edge.
+private struct WavingFlag: Shape {
+    var phase: Double
+
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            let steps = 16
+            func y(_ i: Int, edge: CGFloat) -> CGFloat {
+                let fromPole = Double(steps - i) / Double(steps)  // 0 at the pole, 1 at the free end
+                return edge + CGFloat(sin(phase + fromPole * 2 * .pi) * 1.4 * fromPole)
+            }
+            for i in 0...steps {
+                let x = rect.minX + rect.width * CGFloat(i) / CGFloat(steps)
+                i == 0 ? p.move(to: CGPoint(x: x, y: y(i, edge: rect.minY)))
+                    : p.addLine(to: CGPoint(x: x, y: y(i, edge: rect.minY)))
+            }
+            for i in stride(from: steps, through: 0, by: -1) {
+                let x = rect.minX + rect.width * CGFloat(i) / CGFloat(steps)
+                p.addLine(to: CGPoint(x: x, y: y(i, edge: rect.maxY)))
+            }
+            p.closeSubpath()
+        }
+    }
+}
+
+private struct SweatDrop: View {
+    let time: TimeInterval
+
+    var body: some View {
+        let progress = (time / 1.6).truncatingRemainder(dividingBy: 1)  // drip, fade, repeat
+        Teardrop()
+            .fill(Color(red: 0.55, green: 0.80, blue: 1.0))
+            .overlay(Teardrop().stroke(Color.white.opacity(0.9), lineWidth: 0.6))
+            .frame(width: 6, height: 9)
+            .offset(y: CGFloat(progress) * 7)
+            .opacity(progress < 0.7 ? 1 : (1 - progress) / 0.3)
+    }
+}
+
+private struct Steam: View {
+    let time: TimeInterval
+    /// -1 drifts left, 1 drifts right.
+    let side: CGFloat
+
+    var body: some View {
+        ZStack {
+            ForEach(0..<3) { i in
+                let p = CGFloat(((time / 1.5) + Double(i) / 3).truncatingRemainder(dividingBy: 1))
+                Circle()
+                    .fill(Color(white: 0.86))
+                    .overlay(Circle().stroke(Color(white: 0.5), lineWidth: 0.6))
+                    .frame(width: 3 + p * 7, height: 3 + p * 7)
+                    .offset(x: side * p * 28, y: p * 5)
+                    .opacity(Double(1 - p) * 0.9)
+            }
+        }
+    }
+}
+
+private struct StartFreshSign: View {
+    let time: TimeInterval
+
+    var body: some View {
+        Text("START FRESH?")
+            .font(.system(size: 7, weight: .black, design: .rounded))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 2.5).fill(Color(red: 0.55, green: 0.08, blue: 0.08)))
+            .overlay(RoundedRectangle(cornerRadius: 2.5).strokeBorder(Color.white, lineWidth: 0.7))
+            .rotationEffect(.degrees(3 * sin(time * 2 * .pi / 1.4)))  // gentle swing
+            .fixedSize()
+    }
+}
+
+// MARK: - Shapes
+
+private struct Teardrop: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            let r = rect.width / 2
+            let center = CGPoint(x: rect.midX, y: rect.maxY - r)
+            p.move(to: CGPoint(x: rect.midX, y: rect.minY))
+            p.addQuadCurve(to: CGPoint(x: rect.maxX, y: center.y), control: CGPoint(x: rect.maxX, y: rect.minY + r))
+            p.addArc(center: center, radius: r, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
+            p.addQuadCurve(to: CGPoint(x: rect.midX, y: rect.minY), control: CGPoint(x: rect.minX, y: rect.minY + r))
+            p.closeSubpath()
+        }
+    }
+}
+
+private struct Smile: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            p.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            p.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY), control: CGPoint(x: rect.midX, y: rect.maxY))
+        }
+    }
+}
+
+/// Big open grin: flat top, round bottom.
+private struct Grin: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            p.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            p.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.minY),
+                           control: CGPoint(x: rect.midX, y: rect.maxY + rect.height * 0.8))
+            p.closeSubpath()
+        }
+    }
+}
+
+private struct HappyArc: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            p.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+            p.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.maxY),
+                           control: CGPoint(x: rect.midX, y: rect.minY - rect.height * 0.6))
+        }
+    }
+}
+
+private struct Wave: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            let steps = 24
+            for i in 0...steps {
+                let x = rect.minX + rect.width * CGFloat(i) / CGFloat(steps)
+                let y = rect.midY + rect.height / 2 * CGFloat(sin(Double(i) / Double(steps) * 3 * 2 * .pi))
+                i == 0 ? p.move(to: CGPoint(x: x, y: y)) : p.addLine(to: CGPoint(x: x, y: y))
+            }
+        }
+    }
+}
+
+private struct Spiral: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            let turns = 3.0
+            let steps = 90
+            let maxRadius = min(rect.width, rect.height) / 2
+            for i in 0...steps {
+                let theta = Double(i) / Double(steps) * turns * 2 * .pi
+                let r = maxRadius * CGFloat(Double(i) / Double(steps))
+                let point = CGPoint(x: rect.midX + r * CGFloat(cos(theta)), y: rect.midY + r * CGFloat(sin(theta)))
+                i == 0 ? p.move(to: point) : p.addLine(to: point)
+            }
+        }
     }
 }
 

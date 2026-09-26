@@ -48,6 +48,13 @@ Or open `Reigns.xcodeproj` in Xcode and press Run.
       (override with `REIGNS_ENGINE_URL`), reconnect 1 s → 2 s → 5 s, `session.start` first on every
       connection, queues while offline, new session per conversation. Menu shows engine status.
 - [x] Only the Chat tab is read; the Code tab is skipped (`ignored_mode_titles`)
+- [x] FR-A6 expressions (`Reigns/Pet/PetView.swift`): Calm / Curious / Concerned / Alarmed /
+      Meltdown / Recovered per §10 (separate eye, eyebrow and mouth views; blink, breathing, tilt,
+      fidget, tremble, shake, hop). Driven only by `heat.update` (`level`, `recovered`), spring-animated.
+      Debug: menu › Preview Level › Level 0–4 / Recovered.
+- [x] FR-A7 accessories: always-visible heat badge; "?" badge with unverified (amber) count at
+      levels 1–2; sweat drop + waving red flag at ≥ 3; nostril steam + "START FRESH?" sign at 4
+      (bubble opens above the sign).
 - [ ] · FR-A6/A7 pet levels · FR-A9 Fix it ·
       FR-A10 onboarding · FR-A11 mock mode
 

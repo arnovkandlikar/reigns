@@ -20,6 +20,7 @@ struct ReignsApp: App {
                 ForEach(0..<5) { level in
                     Button("Level \(level)") { appDelegate.previewLevel(level) }
                 }
+                Button("Recovered") { appDelegate.previewRecovered() }
             }
             Button("Log Conversation") { appDelegate.logConversation() }
             #endif

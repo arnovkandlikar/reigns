@@ -1,6 +1,9 @@
 import AppKit
 import SwiftUI
 
+/// FR-A6: expression changes spring into place.
+private let expressionSpring = Animation.spring(response: 0.45, dampingFraction: 0.65)
+
 /// Owns the pet panel: FR-A1 show/hide fade and FR-A2 positioning. The panel's bottom edge is the
 /// "floor" the horse peeks up from: Claude's window bottom, or the top of the Dock when the Dock
 /// would cover the pet.
@@ -42,18 +45,25 @@ final class PetPanelController {
     }
 
     /// Level, heat and bubble content (debug preview).
-    func update(level: Int, heat: Int, bubble: BubbleContent?) {
-        model.level = level
-        model.heat = heat
+    func update(level: Int, heat: Int, bubble: BubbleContent?, recovered: Bool = false, unverified: Int = 0) {
+        model.unverifiedCount = unverified
+        withAnimation(expressionSpring) {
+            model.level = level
+            model.heat = heat
+            model.isRecovered = recovered
+        }
         model.bubble = bubble
         positionBubble(animated: true)
     }
 
     /// FR-A6: the level is driven only by heat.update.level.
     func apply(_ heat: HeatUpdate) {
-        model.level = min(max(heat.level, 0), 4)
-        model.heat = heat.heat
-        model.isRecovered = heat.recovered
+        withAnimation(expressionSpring) {
+            model.level = min(max(heat.level, 0), 4)
+            model.heat = heat.heat
+            model.isRecovered = heat.recovered
+        }
+        model.unverifiedCount = heat.amberCount
         positionBubble(animated: true)
     }
 
@@ -76,9 +86,12 @@ final class PetPanelController {
 
     /// New conversation: back to Calm with nothing to show until the engine reports.
     func resetForNewConversation() {
-        model.level = 0
-        model.heat = 0
-        model.isRecovered = false
+        withAnimation(expressionSpring) {
+            model.level = 0
+            model.heat = 0
+            model.isRecovered = false
+        }
+        model.unverifiedCount = 0
         model.bubble = nil
         model.claims = []
         positionBubble(animated: true)
@@ -184,7 +197,8 @@ final class PetPanelController {
         guard model.isBubbleOpen, let window = claudeWindow else { return }
         let pet = targetFrame(in: window)
         let x = PetSide.saved == .right ? pet.maxX - BubbleView.width : pet.minX
-        let y = pet.minY + PetView.visibleHeight(level: model.level) + 4
+        let y = pet.minY + PetView.visibleHeight(level: model.level, recovered: model.isRecovered)
+            + PetView.accessoryClearance(level: model.level, recovered: model.isRecovered) + 4
         bubblePanel.place(bottomLeft: CGPoint(x: x, y: y), animated: animated)
     }
 

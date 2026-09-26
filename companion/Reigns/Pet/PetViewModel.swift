@@ -10,6 +10,8 @@ final class PetViewModel {
     var bubble: BubbleContent?
     /// heat.update.recovered: shown for 3 s after a verified fix (FR-A6 draws it).
     var isRecovered = false
+    /// heat.update.amber_count: claims the engine couldn't confirm (FR-A7 "?" badge).
+    var unverifiedCount = 0
     /// Every checked claim in this conversation (merged from verdicts.update), for Details.
     var claims: [ClaimVerdict] = []
     var isBubbleOpen = false

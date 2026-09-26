@@ -63,7 +63,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Lets us see each level's peek height before heat.update is wired up (FR-A5/A6).
     func previewLevel(_ level: Int) {
-        pet.update(level: level, heat: Self.previewHeat[level], bubble: .preview(level: level))
+        pet.update(level: level, heat: Self.previewHeat[level], bubble: .preview(level: level),
+                   unverified: [0, 2, 3, 1, 2][level])
     }
 
     /// Reads the conversation off the main thread and logs a summary (FR-A3 check).
@@ -81,6 +82,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for message in messages.suffix(6) {
                 Log.ax.debug("[\(message.position)] \(message.role.rawValue, privacy: .public): \(message.text.prefix(80))")
             }
+        }
+    }
+
+    /// Recovered for 3 s (what heat.update.recovered does after a verified fix), then Calm.
+    func previewRecovered() {
+        pet.update(level: 0, heat: 0, bubble: .allClear, recovered: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.pet.update(level: 0, heat: 0, bubble: .allClear, recovered: false)
         }
     }
 
