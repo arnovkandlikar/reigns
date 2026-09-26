@@ -23,6 +23,7 @@ import asyncio
 import ipaddress
 import os
 import re
+import weakref
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote as urlquote
@@ -30,14 +31,32 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 
-from app.detectors.base import BaseDetector, http_client, normalize_text, similarity, snippet
+from app.detectors.base import (
+    BaseDetector,
+    http_client,
+    normalize_text,
+    similarity,
+    snippet,
+    word_overlap,
+)
 from app.models import Claim, DetectorResult, Evidence, SessionContext
 
 # --- thresholds (tune with Role D's eval results, §6.1 h24–30) --------------------------------
 TITLE_MATCH = 0.85  # FR-C1: normalized title similarity for "same paper"
-TITLE_PARTIAL = 0.60  # below this, a candidate doesn't count as a near-miss at all
+# A "near-miss" (→ amber) needs BOTH close spelling AND shared meaningful words. 0.60 on
+# spelling alone let unrelated titles about the same topic count as near-misses (Arnov's live
+# run: a fake "HiveFormer …Monitoring of Beehives" matched "MUS-Tracker …Monitoring of
+# Beehives" → amber instead of red).
+TITLE_PARTIAL = 0.75
+WORDS_PARTIAL = 0.50
 YEAR_TOLERANCE = 1  # FR-C1: year ±1 (preprint vs. journal year)
 SEARCH_ROWS = 5  # FR-C1: rows=5
+
+# Rate limits: Crossref and Semantic Scholar both return 429 when one reply cites several
+# papers and we query them all at once. So calls to each API go one at a time (the two APIs
+# still run in parallel with each other), and a 429 is retried once after Retry-After
+# (capped so we stay inside the engine's 12 s detector budget).
+MAX_RETRY_WAIT_S = 2.0
 
 CROSSREF_URL = "https://api.crossref.org/works"
 S2_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
@@ -216,6 +235,27 @@ def _s2_candidates(data: dict[str, Any]) -> list[Candidate]:
     return out
 
 
+# One Semaphore(1) per (event loop, API). Keyed by loop because an asyncio primitive can only
+# be used on the loop it was first used on, and tests start a new loop per test.
+_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _api_lock(api: str) -> asyncio.Semaphore:
+    per_loop = _LOCKS.setdefault(asyncio.get_running_loop(), {})
+    if api not in per_loop:
+        per_loop[api] = asyncio.Semaphore(1)
+    return per_loop[api]
+
+
+def _retry_after(resp: httpx.Response) -> float:
+    """Seconds to wait before retrying a 429: the Retry-After header, capped at 2 s."""
+    try:
+        wait = float(resp.headers.get("Retry-After", "1"))
+    except ValueError:  # Retry-After can also be an HTTP date; don't bother parsing it
+        wait = 1.0
+    return max(0.0, min(wait, MAX_RETRY_WAIT_S))
+
+
 def _is_private_host(host: str) -> bool:
     """Never let an AI-written URL make the engine probe localhost / the LAN (SSRF guard)."""
     if host in ("localhost",) or host.endswith(".local"):
@@ -291,6 +331,7 @@ class ReferenceAuditor(BaseDetector):
                 )
 
         best_score, best = scored[0] if scored else (0.0, None)
+        best_words = word_overlap(ref.title, best.title) if best is not None else 0.0
 
         # 2) Title matches but authors or year don't → the paper exists but was mis-cited.
         if best is not None and best_score >= TITLE_MATCH:
@@ -307,7 +348,7 @@ class ReferenceAuditor(BaseDetector):
             )
 
         # 3) Something similar but not the same title → can't say it's fake (amber).
-        if best is not None and best_score >= TITLE_PARTIAL:
+        if best is not None and best_score >= TITLE_PARTIAL and best_words >= WORDS_PARTIAL:
             return self.result(
                 "unverified",
                 0.5,
@@ -366,10 +407,8 @@ class ReferenceAuditor(BaseDetector):
         mailto = os.environ.get("CROSSREF_MAILTO")
         if mailto:
             params["mailto"] = mailto
-        async with self._client() as client:
-            resp = await client.get(CROSSREF_URL, params=params)
-            resp.raise_for_status()
-            return _crossref_candidates(resp.json())
+        resp = await self._api_get("crossref", CROSSREF_URL, params=params)
+        return _crossref_candidates(resp.json())
 
     async def _search_s2(self, ref: PaperRef) -> list[Candidate]:
         headers = {}
@@ -381,10 +420,18 @@ class ReferenceAuditor(BaseDetector):
             "limit": SEARCH_ROWS,
             "fields": "title,authors,year,externalIds,url",
         }
-        async with self._client() as client:
-            resp = await client.get(S2_URL, params=params, headers=headers)
+        resp = await self._api_get("s2", S2_URL, params=params, headers=headers)
+        return _s2_candidates(resp.json())
+
+    async def _api_get(self, api: str, url: str, **kwargs: Any) -> httpx.Response:
+        """GET with one-at-a-time access per API and a single retry on 429."""
+        async with _api_lock(api), self._client() as client:
+            resp = await client.get(url, **kwargs)
+            if resp.status_code == 429:
+                await asyncio.sleep(_retry_after(resp))
+                resp = await client.get(url, **kwargs)
             resp.raise_for_status()
-            return _s2_candidates(resp.json())
+            return resp
 
     # ---------------------------------------------------------------------- URLs
     async def _check_url(self, claim: Claim, session: SessionContext) -> DetectorResult:

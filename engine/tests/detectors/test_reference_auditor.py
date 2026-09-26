@@ -324,3 +324,147 @@ async def test_live_fixture_scenario(load_scenario):
         print(f"              {r.explanation}")
         for e in r.evidence:
             print(f"              [{e.source}] {e.snippet}")
+
+
+# --------------------------------------------------------------------------- Arnov's live run
+# 1) near-miss threshold: a fake title about the same topic must NOT be a near-miss.
+async def test_topic_neighbour_is_not_a_near_miss(session):
+    mus = {
+        "DOI": "10.1000/mus",
+        "title": ["MUS-Tracker: An IoT Based System in Controlling and Monitoring of Beehives"],
+        "author": [{"family": "Nguyen"}],
+        "issued": {"date-parts": [[2020]]},
+    }
+
+    def handler(req):
+        if req.url.host == "api.crossref.org":
+            return httpx.Response(200, json={"message": {"items": [mus]}})
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"title": mus["title"][0], "year": 2020, "authors": [{"name": "T. Nguyen"}]}
+                ]
+            },
+        )
+
+    c = claim(
+        "paper",
+        'Moreau, Tanaka & Silva (2021), "HiveFormer: Attention-Based Acoustic '
+        'Monitoring of Beehives"',
+    )
+    r = await ReferenceAuditor(transport=httpx.MockTransport(handler)).check(c, session)
+    assert r.status == "contradicted", r.explanation  # red, not amber
+
+
+async def test_real_near_miss_is_still_amber(session):
+    """Same paper, words shuffled/garbled (spelling 0.82, words 0.83) → amber, not red.
+
+    We might be wrong about a garbled citation of a real paper, so it only gets a question mark.
+    """
+    resnet = {
+        "DOI": "10.1109/CVPR.2016.90",
+        "title": ["Deep residual learning for image recognition"],
+        "author": [{"family": "He"}],
+        "issued": {"date-parts": [[2016]]},
+    }
+
+    def handler(req):
+        if req.url.host == "api.crossref.org":
+            return httpx.Response(200, json={"message": {"items": [resnet]}})
+        return httpx.Response(200, json={"data": []})
+
+    c = claim("paper", 'He et al. (2016), "Residual Learning for Deep Image Recognition Models"')
+    r = await ReferenceAuditor(transport=httpx.MockTransport(handler)).check(c, session)
+    assert r.status == "unverified", r.explanation
+
+
+# 2) rate limits
+async def test_429_is_retried_once_after_retry_after(session, monkeypatch):
+    import app.detectors.reference_auditor as ra
+
+    waits: list[float] = []
+
+    async def fake_sleep(s):
+        waits.append(s)
+
+    monkeypatch.setattr(ra.asyncio, "sleep", fake_sleep)
+    hits = {"crossref": 0}
+
+    def handler(req):
+        if req.url.host == "api.crossref.org":
+            hits["crossref"] += 1
+            if hits["crossref"] == 1:
+                return httpx.Response(429, headers={"Retry-After": "7"})
+        return api_handler(req)
+
+    c = claim("paper", 'Vaswani et al. (2017), "Attention Is All You Need"')
+    r = await ReferenceAuditor(transport=httpx.MockTransport(handler)).check(c, session)
+    assert r.status == "supported"
+    assert hits["crossref"] == 2
+    assert waits == [2.0]  # Retry-After 7 s capped at 2 s
+
+
+async def test_429_twice_falls_back_to_other_source(session, monkeypatch):
+    import app.detectors.reference_auditor as ra
+
+    async def no_sleep(s): ...
+
+    monkeypatch.setattr(ra.asyncio, "sleep", no_sleep)
+
+    def handler(req):
+        if req.url.host == "api.semanticscholar.org":
+            return httpx.Response(429)
+        return api_handler(req)
+
+    c = claim(
+        "paper",
+        'Okafor et al. (2023), "Predicting Colony Collapse Disorder with Temporal '
+        'Fusion Transformers"',
+    )
+    r = await ReferenceAuditor(transport=httpx.MockTransport(handler)).check(c, session)
+    assert r.status == "contradicted"  # Crossref alone still decides → red, not skipped
+
+
+async def test_calls_to_each_api_are_serialized(load_scenario, session):
+    """4 papers checked in parallel (like the engine does) → never 2 Crossref calls at once."""
+    import asyncio
+
+    in_flight = {"api.crossref.org": 0, "api.semanticscholar.org": 0}
+    peak = dict(in_flight)
+
+    class SlowTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            host = request.url.host
+            in_flight[host] += 1
+            peak[host] = max(peak[host], in_flight[host])
+            await asyncio.sleep(0.01)
+            in_flight[host] -= 1
+            return api_handler(request)
+
+    a = ReferenceAuditor(transport=SlowTransport())
+    claims = [Claim(**c) for c in load_scenario("fake_citation")["expected"]["claims"]][:4]
+    results = await asyncio.gather(
+        *(a.check(c, SessionContext(session_id=str(i))) for i, c in enumerate(claims))
+    )
+    assert peak == {"api.crossref.org": 1, "api.semanticscholar.org": 1}
+    assert [r.status for r in results].count("contradicted") == 3
+    assert [r.status for r in results].count("supported") == 1  # → 3 red + 1 green
+
+
+# 3) mailto
+async def test_crossref_mailto_is_sent(session, monkeypatch):
+    monkeypatch.setenv("CROSSREF_MAILTO", "team@reigns.dev")
+    seen = {}
+
+    def handler(req):
+        if req.url.host == "api.crossref.org":
+            seen["param"] = req.url.params.get("mailto")
+            seen["ua"] = req.headers.get("user-agent")
+        return api_handler(req)
+
+    await ReferenceAuditor(transport=httpx.MockTransport(handler)).check(
+        claim("paper", 'Vaswani et al. (2017), "Attention Is All You Need"'), session
+    )
+    assert seen["param"] == "team@reigns.dev"
+    assert "mailto:team@reigns.dev" in seen["ua"]

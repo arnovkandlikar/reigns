@@ -63,12 +63,16 @@ log = logging.getLogger("reigns.detectors")
 # (FR-B5), so one slow API can't eat the whole budget. FR-C1 specifies 5 s for URL checks.
 HTTP_TIMEOUT_S = 5.0
 
+
 # Crossref gives faster, more reliable service to clients that identify themselves with a
-# contact email ("polite pool"). Optional: set CROSSREF_MAILTO in your .env.
-_MAILTO = os.environ.get("CROSSREF_MAILTO", "").strip()
-USER_AGENT = "Reigns/1.0 (ShellHacks hallucination detector" + (
-    f"; mailto:{_MAILTO})" if _MAILTO else ")"
-)
+# contact email ("polite pool"). Set CROSSREF_MAILTO in .env. Read at call time (not import
+# time) so it works however the engine loads its environment.
+def user_agent() -> str:
+    mailto = os.environ.get("CROSSREF_MAILTO", "").strip()
+    return "Reigns/1.0 (ShellHacks hallucination detector" + (
+        f"; mailto:{mailto})" if mailto else ")"
+    )
+
 
 # Max characters for an evidence snippet — keeps the bubble / Details panel readable.
 SNIPPET_MAX = 300
@@ -174,7 +178,7 @@ def http_client(**overrides: Any) -> httpx.AsyncClient:
     opts: dict[str, Any] = {
         "timeout": HTTP_TIMEOUT_S,
         "follow_redirects": True,
-        "headers": {"User-Agent": USER_AGENT},
+        "headers": {"User-Agent": user_agent()},
     }
     opts.update(overrides)
     return httpx.AsyncClient(**opts)
@@ -203,6 +207,57 @@ def similarity(a: str, b: str) -> float:
     if not na or not nb:
         return 0.0
     return SequenceMatcher(None, na, nb).ratio()
+
+
+# Words that carry no meaning in a paper title; ignored by word_overlap().
+_STOPWORDS = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "of",
+        "for",
+        "in",
+        "on",
+        "with",
+        "and",
+        "to",
+        "by",
+        "via",
+        "using",
+        "based",
+        "is",
+        "are",
+        "we",
+        "from",
+        "at",
+        "as",
+        "its",
+        "towards",
+        "toward",
+        "into",
+        "over",
+        "under",
+    ]
+)
+
+
+def content_words(text: str) -> set[str]:
+    return {w for w in normalize_text(text).split() if w not in _STOPWORDS}
+
+
+def word_overlap(a: str, b: str) -> float:
+    """Jaccard overlap of meaningful words (0.0–1.0).
+
+    Complements similarity(): two titles can share many letters/short words and still be
+    different papers. "HiveFormer: Attention-Based Acoustic Monitoring of Beehives" vs
+    "MUS-Tracker: An IoT Based System … Monitoring of Beehives" → similarity 0.64 but
+    word_overlap 0.20.
+    """
+    wa, wb = content_words(a), content_words(b)
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
 
 
 def snippet(text: str, limit: int = SNIPPET_MAX) -> str:
