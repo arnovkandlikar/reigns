@@ -92,7 +92,7 @@ async def show_brief(chat: str) -> None:
         print(f"{RED}no brief produced; check ANTHROPIC_API_KEY{RESET}")
         return
     print(session_brief.for_claude(s))
-    os.environ.setdefault("REIGNS_BRIEF_OFFER_TURNS", "20")
+    os.environ.setdefault("REIGNS_BRIEF_OFFER_CHARS", "40000")
     o = session_brief.offer(s)
     print(f"\n{BOLD}Pet offer:{RESET} {o['headline'] if o else '(none at this length)'}")
 
