@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 
 from pymongo.errors import PyMongoError
@@ -18,6 +19,11 @@ VARIANTS = ("v1", "v2", "v3")  # evidence-first, question-first, checklist-style
 async def choose_variant(failure_type: str, prompt_type: str) -> tuple[str, str]:
     """Return (variant name, stable ID); Mongo stores observed success/failure counts."""
     ids = [f"{failure_type}:{prompt_type}:{variant}" for variant in VARIANTS]
+    # FR-L7 capture aid: hold one arm fixed while recording separate model replies for
+    # v1/v2/v3. Leave unset for normal Thompson sampling.
+    forced = os.environ.get("WITNESS_PROMPT_VARIANT", "").strip()
+    if forced in VARIANTS:
+        return forced, ids[VARIANTS.index(forced)]
     counts: dict[str, tuple[int, int]] = {}
     try:
         db = get_db()
@@ -32,7 +38,14 @@ async def choose_variant(failure_type: str, prompt_type: str) -> tuple[str, str]
                         max(0, int(row.get("alpha", 0))),
                         max(0, int(row.get("beta", 0))),
                     )
-    except (PyMongoError, TimeoutError, OSError, ValueError, TypeError, ImportError) as exc:
+    except (
+        PyMongoError,
+        TimeoutError,
+        OSError,
+        ValueError,
+        TypeError,
+        ImportError,
+    ) as exc:
         log.warning("variant counts unavailable; sampling from priors: %s", exc)
 
     scores = []

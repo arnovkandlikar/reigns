@@ -80,3 +80,18 @@ conversation, also capture replies to “Are you sure?” and “That's wrong, f
 it.” Label whether each follow-up actually corrected the originally failed
 claim. The baseline reply text and checked outcome go in the optional
 `baselines` field described in `README.md`.
+
+## FR-L7 prompt-variant outcomes
+
+The five learning rounds need a separate outcome file; the ordinary trap
+runner's one captured follow-up does not show how all three variants perform.
+For each selected training and held-out trap, make three fresh copies of the
+same original conversation. Run the engine with `WITNESS_PROMPT_VARIANT=v1`,
+then `v2`, then `v3`, capturing the model's next reply after each correction.
+Independently label each targeted claim fixed or not fixed. Store one JSONL row
+per original trap in `learning_outcomes.jsonl` as documented in `README.md`.
+
+Choose roughly ten held-out traps before collecting outcomes. Their replies are
+used only for the final learned-variant versus always-v1 comparison; never use
+them to update or choose bandit variants. Use `python eval/learning_rounds.py`
+to produce the five-round report and chart after both splits are complete.
