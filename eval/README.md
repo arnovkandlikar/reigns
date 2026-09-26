@@ -89,3 +89,46 @@ captured follow-up answers. Add optional `baselines` entries named
 `are_you_sure` and `plain_fix`, each with the captured `reply` and an
 independently checked Boolean `fixed`. Use separate copies of the original
 conversation for each baseline. The initial seed set does not measure them.
+
+## Public dataset seeding (FR-L6)
+
+`seed_datasets.py` downloads the official releases for
+[HaluEval](https://github.com/RUCAIBox/HaluEval),
+[TruthfulQA](https://github.com/sylinrl/TruthfulQA), and
+[FEVER](https://fever.ai/dataset/fever.html). It selects 25 correct and 25
+known-wrong examples from each of HaluEval QA, HaluEval summarization,
+TruthfulQA, and FEVER: 200 cases total. The local output is
+`dataset_cases.jsonl`. Downloads are cached in `eval/.dataset_cache/`. Git
+ignores both files; `dataset_manifest.json` records counts, source URLs, and
+source file hashes without republishing dataset content.
+
+```bash
+python eval/seed_datasets.py
+python eval/seed_datasets.py --offline  # rebuild from the cached source files
+```
+
+Every case has a stable ID, source URL, source row ID, source file SHA-256,
+`origin: "dataset"`, and `confirmed_by: "dataset"`. FEVER's `NOT ENOUGH INFO`
+rows are excluded. Its evidence IDs are not copied into `evidence_snippet` as
+though they were evidence quotes. HaluEval's wrong answers and summaries are
+dataset-generated examples; the labels refer to the complete response, not to
+each sentence. TruthfulQA uses the dataset's Best Answer and Best Incorrect
+Answer columns. No full source documents or conversation transcripts enter the
+Mongo cases.
+
+To upsert the cases into Atlas, after reviewing the JSONL, run:
+
+```bash
+python eval/seed_datasets.py --offline --mongo --embed --env-file .env
+python eval/seed_datasets.py --verify-only --env-file .env
+```
+
+`--mongo` uses stable IDs, so repeating it does not duplicate cases. `--embed`
+uses the project's Voyage key to make the new cases available to vector search;
+without it, the cases are stored without vectors. A later `--embed` run fills
+in vectors for existing cases. HaluEval's repository is
+MIT licensed, TruthfulQA is Apache 2.0, and
+[FEVER's license](https://fever.ai/download/fever/license.html) incorporates
+Wikipedia attribution and share-alike terms. These public seed cases are
+learning inputs. They are separate from `trap_prompts.jsonl` and do not count
+as captured model answers or independent evaluation results.
