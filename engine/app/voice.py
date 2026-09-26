@@ -289,6 +289,15 @@ def full_line(bubble: BubbleContent) -> str:
     return clip_sentences(text, FULL_MAX_WORDS)
 
 
+def spanish_fallback(bubble: BubbleContent) -> str:
+    """When the Spanish summary can't be made, never read the (English) bubble aloud: say, in
+    Spanish, how many problems there are and point to the bubble."""
+    n = len(bubble.problems)
+    if n <= 1:
+        return "Encontré un problema en esta respuesta. Revisa la burbuja para ver los detalles."
+    return f"Encontré {n} problemas en esta respuesta. Revisa la burbuja para ver los detalles."
+
+
 def _new_problem_ids(bubble: BubbleContent, spoken_ids: set[str]) -> set[str]:
     return {p.claim_id for p in bubble.problems} - spoken_ids
 
@@ -304,18 +313,19 @@ def line_for(
     p: Optional[str] = None,
 ) -> Optional[str]:
     p = p or style()
+    spanish = language(lang) == "es"
     if recovered:
         return recovered_line(lang, p)
     if mode() == "short":
         if level >= 3 and level > prev_level and bubble.headline:
-            return clip_words(bubble.headline)
+            return spanish_fallback(bubble) if spanish else clip_words(bubble.headline)
         return None
     # full mode
     if level < 1 or not bubble.headline:
         return None
     rose_to_alarm = level >= 3 and level > prev_level
     if _new_problem_ids(bubble, spoken_ids or set()) or rose_to_alarm:
-        text = full_line(bubble)
+        text = spanish_fallback(bubble) if spanish else full_line(bubble)
         if p in ("cowboy", "unicorn"):
             first = opener or OPENERS_BY_LANG[language(lang)][p][0]
             return clip_sentences(f"{first} {text}", FULL_MAX_WORDS)
@@ -375,9 +385,9 @@ def _clean_spoken(text: str) -> str:
 
 
 _SPANISH = (
-    " Speak in natural Latin American Spanish, even though the notes are in English (translate "
-    "them; keep names, numbers and titles exact). For the cowboy style, use Spanish folksy words "
-    "like 'compañero', 'amigo' or 'híjole' now and then instead of English ones; for the unicorn, "
+    " Your ENTIRE reply must be in natural Latin American Spanish, even though the notes are in "
+    "English (translate them; keep names, numbers and titles exact; no English sentences). "
+    "For the cowboy style, use Spanish folksy words like 'compañero', 'amigo' or 'híjole' now and then instead of English ones; for the unicorn, "
     "keep it bubbly ('amiguito', 'brillitos') without overdoing it."
 )
 

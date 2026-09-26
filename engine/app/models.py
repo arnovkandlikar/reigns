@@ -56,6 +56,7 @@ RootCause = Literal[
 MessageType = Literal[
     # Companion → Engine (§12.1)
     "session.start",
+    "session.update",
     "message.new",
     "correction.inserted",
     "feedback.disagree",
@@ -102,6 +103,13 @@ class SessionStart(_Strict):
     # Language the pet speaks: "en" (default) or "es". Unknown values fall back to English.
     language: Optional[str] = None
     # Which pet is on screen: "charlie" (horse, default) or "marley" (unicorn) → voice + personality.
+    character: Optional[str] = None
+
+
+class SessionUpdate(_Strict):
+    """Change language / pet in the middle of a chat WITHOUT a new session: heat, history,
+    pending checks and the bubble all stay. Omitted fields are left as they are."""
+    language: Optional[str] = None
     character: Optional[str] = None
 
 
@@ -202,6 +210,7 @@ class ErrorPayload(_Strict):
 # type string → payload model, used to validate every inbound/outbound message (FR-B2)
 PAYLOAD_MODELS: dict[str, type[BaseModel]] = {
     "session.start": SessionStart,
+    "session.update": SessionUpdate,
     "message.new": MessageNew,
     "correction.inserted": CorrectionInserted,
     "feedback.disagree": FeedbackDisagree,
@@ -211,7 +220,8 @@ PAYLOAD_MODELS: dict[str, type[BaseModel]] = {
     "voice.play": VoicePlay,
     "error": ErrorPayload,
 }
-INBOUND_TYPES = {"session.start", "message.new", "correction.inserted", "feedback.disagree"}
+INBOUND_TYPES = {"session.start", "session.update", "message.new", "correction.inserted",
+                 "feedback.disagree"}
 
 
 # ---------------------------------------------------------------------------

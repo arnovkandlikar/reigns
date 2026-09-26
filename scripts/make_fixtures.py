@@ -467,6 +467,8 @@ def main() -> None:
         "text": "Heads up, Claude is making up sources.",
         "audio_b64": "SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA",
         "mime": "audio/mpeg", "level": 3})
+    examples["session.update"] = env("session.update", sid, {"language": "es",
+                                                              "character": "marley"})
     examples["error"] = env("error", sid, {"code": "invalid_message",
                                            "message": "bad message.new payload: Field required at "
                                                       "['position']"})

@@ -1,0 +1,34 @@
+{
+  "$id": "reigns/session_update.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Payload of the 'session.update' WebSocket message (PRD \u00a712).",
+  "properties": {
+    "character": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Character"
+    },
+    "language": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Language"
+    }
+  },
+  "title": "SessionUpdate",
+  "type": "object"
+}

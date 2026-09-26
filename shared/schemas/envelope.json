@@ -19,6 +19,7 @@
     "type": {
       "enum": [
         "session.start",
+        "session.update",
         "message.new",
         "correction.inserted",
         "feedback.disagree",
