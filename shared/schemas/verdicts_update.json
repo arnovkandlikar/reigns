@@ -79,7 +79,8 @@
             "consistency_probe",
             "pushback",
             "source_faithfulness",
-            "code_api_checker"
+            "code_api_checker",
+            "memory_consistency"
           ],
           "title": "Detector",
           "type": "string"
