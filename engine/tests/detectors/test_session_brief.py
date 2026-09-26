@@ -275,18 +275,71 @@ async def test_no_offer_without_a_brief():
     assert sb.offer(make_chat(30)) is None
 
 
-async def test_long_chat_offer_once_then_again_later(monkeypatch):
-    monkeypatch.setenv("REIGNS_BRIEF_OFFER_TURNS", "6")
-    s = make_chat(4)
+async def test_offer_counts_characters_not_turns(monkeypatch):
+    monkeypatch.setenv("REIGNS_BRIEF_OFFER_CHARS", "2000")
+    s = make_chat(4)  # short messages: well under 2,000 characters
     await sb.schedule(s, judge=Judge())
-    assert sb.offer(s) is None  # 4 turns < 6
-    add_turn(s), add_turn(s)
+    for _ in range(30):
+        add_turn(s)  # 30 more turns, but only ~150 characters in total
+    assert sb.offer(s) is None  # many turns, little text → no offer
+    add_turn(s, reply="x" * 2000)  # one long, code-heavy reply crosses the threshold
     o = sb.offer(s)
     assert o and o["reason"] == "long_chat" and o["text"].startswith("Quick context refresh")
-    assert sb.offer(s) is None  # not twice
-    for _ in range(6):
-        add_turn(s)
+
+
+async def test_offer_repeats_every_threshold_of_new_text(monkeypatch):
+    monkeypatch.setenv("REIGNS_BRIEF_OFFER_CHARS", "1000")
+    s = make_chat(4)
+    await sb.schedule(s, judge=Judge())
+    add_turn(s, reply="x" * 1000)
     assert sb.offer(s)["reason"] == "long_chat"
+    assert sb.offer(s) is None  # not twice for the same text
+    add_turn(s, reply="y" * 600)
+    assert sb.offer(s) is None  # 600 new characters < 1,000
+    add_turn(s, user="z" * 500)  # user text (e.g. a pasted document) counts too
+    assert sb.offer(s)["reason"] == "long_chat"
+
+
+async def test_threshold_crossed_before_a_brief_waits_for_it(monkeypatch):
+    monkeypatch.setenv("REIGNS_BRIEF_OFFER_CHARS", "1000")
+    s = make_chat(1)
+    add_turn(s, user="Summary of my project, long: " + "detail " * 200)
+    assert sb.offer(s) is None  # no brief yet: nothing to offer
+    await sb.schedule(s, judge=Judge())  # lots of text → the brief starts early (turn 2)
+    assert sb.current(s) is not None
+    assert sb.offer(s)["reason"] == "long_chat"  # offer arrives on the next reply
+
+
+async def test_brief_updates_early_when_lots_of_text_arrives(monkeypatch):
+    monkeypatch.setenv("REIGNS_BRIEF_OFFER_CHARS", "40000")
+    s = make_chat(4)
+    j = Judge()
+    await sb.schedule(s, judge=j)
+    add_turn(s, reply="code " * 2500)  # 12,500 chars in ONE turn ≥ refresh_chars (10,000)
+    await sb.schedule(s, judge=j)
+    assert len(j.calls) == 2  # updated after 1 turn instead of waiting for 4
+
+
+async def test_brief_kept_fresh_just_before_an_offer(monkeypatch):
+    monkeypatch.setenv("REIGNS_BRIEF_OFFER_CHARS", "4000")
+    s = make_chat(4)
+    j = Judge()
+    await sb.schedule(s, judge=j)
+    add_turn(s, reply="a" * 900)  # under refresh_chars (1,000) → normally not due…
+    assert sb.schedule(s, judge=j) is None
+    add_turn(s, reply="b" * 900)
+    add_turn(s, reply="c" * 900)  # …but now ≥ 75% of the offer threshold since the last offer
+    await sb.schedule(s, judge=j)
+    assert len(j.calls) == 2
+
+
+def test_offer_threshold_env_parsing(monkeypatch):
+    monkeypatch.delenv("REIGNS_BRIEF_OFFER_CHARS", raising=False)
+    assert sb.offer_after_chars() == sb.DEFAULT_OFFER_CHARS
+    monkeypatch.setenv("REIGNS_BRIEF_OFFER_CHARS", "nonsense")
+    assert sb.offer_after_chars() == sb.DEFAULT_OFFER_CHARS
+    monkeypatch.setenv("REIGNS_BRIEF_OFFER_CHARS", "10")
+    assert sb.offer_after_chars() == sb.MIN_OFFER_CHARS
 
 
 async def test_offer_when_claude_forgets_what_user_said():
@@ -300,6 +353,17 @@ async def test_offer_when_claude_forgets_what_user_said():
     assert sb.offer(s) is None  # cooldown: don't nag every turn
 
 
+async def test_forgot_offer_resets_the_length_counter(monkeypatch):
+    monkeypatch.setenv("REIGNS_BRIEF_OFFER_CHARS", "1000")
+    s = make_chat(4)
+    await sb.schedule(s, judge=Judge())
+    add_turn(s, reply="x" * 1200)
+    flag(s, "a4", "Your limit is 1,000 requests per minute", detector="memory_consistency")
+    assert sb.offer(s)["reason"] == "forgot"
+    add_turn(s)
+    assert sb.offer(s) is None  # they just got a brief; no second offer for the same text
+
+
 async def test_forgot_only_counts_the_latest_reply():
     s = make_chat(4)
     await sb.schedule(s, judge=Judge())
@@ -309,7 +373,8 @@ async def test_forgot_only_counts_the_latest_reply():
 
 @pytest.mark.parametrize("lang,word", [("en", "Long chat"), ("es", "Chat largo")])
 async def test_offer_headline_language(monkeypatch, lang, word):
-    monkeypatch.setenv("REIGNS_BRIEF_OFFER_TURNS", "4")
+    monkeypatch.setenv("REIGNS_BRIEF_OFFER_CHARS", "500")
     s = make_chat(4, language=lang)
     await sb.schedule(s, judge=Judge())
+    add_turn(s, reply="x" * 500)
     assert word in sb.offer(s)["headline"]

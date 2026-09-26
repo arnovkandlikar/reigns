@@ -26,9 +26,9 @@ to repeat it.
 
 How it runs
 -----------
-Incremental and in the background: after every REFRESH_EVERY assistant turns (once the chat
-is longer than the gate's window), the fast model merges the NEW messages into the previous
-brief. `memory.on_verdicts` (already spawned by the engine after each judged reply) calls
+Incremental and in the background: the fast model merges the NEW messages into the previous
+brief every REFRESH_EVERY assistant turns, or sooner when a lot of text arrived (see
+refresh_chars), and again just before an offer is due so the offer carries a fresh brief. `memory.on_verdicts` (already spawned by the engine after each judged reply) calls
 `schedule()`, so no engine changes are needed for the gate half. Best-effort everywhere: a
 failed update keeps the previous brief and never raises into the engine.
 
@@ -41,8 +41,16 @@ Public API
     for_claude(session)          first-person text for the user to send to Claude
     offer(session)               payload for the pet's "want a context refresh?" bubble, or None
 
-Env: REIGNS_SESSION_BRIEF=0 turns it off. REIGNS_BRIEF_OFFER_TURNS (default 20) sets when the
-pet offers a refresh in a long chat.
+When the pet offers a refresh: by LENGTH, not turn count
+---------------------------------------------------------
+What pushes early context out of Claude's attention is how much text the chat holds, not how
+many turns it has: 20 one-line answers are tiny, 5 answers full of code are huge. So the pet
+offers a refresh each time REIGNS_BRIEF_OFFER_CHARS characters (default 40,000, about 10k
+tokens) have been added since the last offer, counting BOTH sides, because pasted documents
+and Claude's replies fill the context window alike. Every offer carries a newly updated brief.
+
+Env: REIGNS_SESSION_BRIEF=0 turns it off. REIGNS_BRIEF_OFFER_CHARS sets the offer threshold
+(use ~3000 for a demo).
 """
 
 from __future__ import annotations
@@ -63,6 +71,9 @@ STATE_KEY = "session_brief:state"
 
 START_AFTER_TURNS = 4  # the gate already sees the last 8 messages (= 4 turns) itself
 REFRESH_EVERY = 4  # assistant turns between background updates
+DEFAULT_OFFER_CHARS = 40_000  # ≈ 10k tokens of new conversation between offers
+MIN_OFFER_CHARS = 500
+PRE_OFFER_FRACTION = 0.75  # past this share of the threshold, update every turn (fresh offer)
 CHUNK_MESSAGES = 16  # messages per model call when catching up on a long backlog
 MESSAGE_CHARS = 1200  # per message, after removing pasted content
 MAX_ITEMS = 8  # per list
@@ -124,7 +135,7 @@ class Brief:
 class _State:
     brief: Brief | None = None
     task: asyncio.Future | None = None
-    offered_turn: int | None = None  # long-chat offer
+    offered_upto: int = -1  # position of the last message when the long-chat offer was made
     forgot_turn: int | None = None  # "Claude forgot what you told it" offer
 
 
@@ -133,11 +144,27 @@ def enabled() -> bool:
     return os.environ.get("REIGNS_SESSION_BRIEF", "1") != "0" and llm_available()
 
 
-def offer_after_turns() -> int:
+def offer_after_chars() -> int:
+    """Characters of new conversation (both sides) between context-refresh offers."""
     try:
-        return max(2, int(os.environ.get("REIGNS_BRIEF_OFFER_TURNS", "20")))
+        value = int(os.environ.get("REIGNS_BRIEF_OFFER_CHARS", str(DEFAULT_OFFER_CHARS)))
     except ValueError:
-        return 20
+        return DEFAULT_OFFER_CHARS
+    return max(MIN_OFFER_CHARS, value)
+
+
+def refresh_chars() -> int:
+    """Update the brief early when this much text arrived since the last update."""
+    return max(MIN_OFFER_CHARS, offer_after_chars() // 4)
+
+
+def chars_since(session: SessionContext, position: int) -> int:
+    """Characters in all messages after `position` (both user and assistant)."""
+    return sum(len(m.text) for m in session.messages if m.position > position)
+
+
+def _latest_position(session: SessionContext) -> int:
+    return max((m.position for m in session.messages), default=-1)
 
 
 def _state(session: SessionContext) -> _State:
@@ -159,10 +186,22 @@ def current(session: SessionContext) -> Brief | None:
 
 def due(session: SessionContext) -> bool:
     turns = assistant_turns(session)
-    if turns < START_AFTER_TURNS:
+    if turns == 0:
         return False
-    b = _state(session).brief
-    return b is None or turns - b.turns >= REFRESH_EVERY
+    st = _state(session)
+    b = st.brief
+    upto = b.upto if b else -1
+    if upto >= _latest_position(session):
+        return False  # nothing new
+    new_chars = chars_since(session, upto)
+    if b is None:
+        # Short chats fit in the gate's own window; start once the chat outgrows it, or as
+        # soon as a lot of text arrived (a pasted document on turn 1).
+        return turns >= START_AFTER_TURNS or new_chars >= refresh_chars()
+    if turns - b.turns >= REFRESH_EVERY or new_chars >= refresh_chars():
+        return True
+    # Close to an offer: keep the brief current every turn so the offer isn't stale.
+    return chars_since(session, st.offered_upto) >= PRE_OFFER_FRACTION * offer_after_chars()
 
 
 def _clean_list(value: Any) -> list[str]:
@@ -376,9 +415,11 @@ def _forgot_in_latest_reply(session: SessionContext) -> bool:
 def offer(session: SessionContext) -> dict[str, Any] | None:
     """Should the pet offer a context refresh right now? Returns the bubble payload or None.
 
-    Offers once when the chat reaches REIGNS_BRIEF_OFFER_TURNS (then again every that many
-    turns), or right away when the memory check caught Claude forgetting something the user
-    said. Marks the offer as made, so call it once per judged reply.
+    Offers each time REIGNS_BRIEF_OFFER_CHARS characters of new conversation (both sides) have
+    built up since the last offer, or right away when the memory check caught Claude
+    forgetting something the user said. Marks the offer as made, so call it once per judged
+    reply. If the threshold is crossed before a brief exists, the offer waits for the next
+    reply (the brief updates in the background in the meantime).
     """
     try:
         b = current(session)
@@ -392,10 +433,9 @@ def offer(session: SessionContext) -> dict[str, Any] | None:
             st.forgot_turn is None or turns - st.forgot_turn >= FORGOT_COOLDOWN_TURNS
         ):
             reason, st.forgot_turn = "forgot", turns
-        elif turns >= offer_after_turns() and (
-            st.offered_turn is None or turns - st.offered_turn >= offer_after_turns()
-        ):
-            reason, st.offered_turn = "long_chat", turns
+            st.offered_upto = _latest_position(session)  # the user just got a fresh brief
+        elif chars_since(session, st.offered_upto) >= offer_after_chars():
+            reason, st.offered_upto = "long_chat", _latest_position(session)
         if reason is None:
             return None
         return {
