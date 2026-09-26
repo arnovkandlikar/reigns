@@ -36,19 +36,39 @@ _QUEUE_MAX = 500
 
 _client: Any = None
 _db: Any = None
+_loop: Any = None  # event loop the Motor client is bound to
 _queue: deque[tuple[str, dict]] = deque(maxlen=_QUEUE_MAX)  # (collection, doc) awaiting retry
-_lock = asyncio.Lock()
+_lock: Optional[asyncio.Lock] = None
 
 
 def enabled() -> bool:
     return bool(os.environ.get("MONGODB_URI"))
 
 
+def _running_loop() -> Any:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
 def get_db() -> Any:
-    """Motor database handle (or None when Mongo is off). Shared with Roles C/D."""
-    global _client, _db
+    """Motor database handle (or None when Mongo is off). Shared with Roles C/D.
+
+    A Motor client is tied to the event loop it was first used on. If we're now on a different
+    loop (e.g. pytest runs each test in a fresh loop), drop the old client and make a new one —
+    otherwise calls fail with "Event loop is closed"."""
+    global _client, _db, _loop, _lock
     if not enabled():
         return None
+    loop = _running_loop()
+    if _client is not None and loop is not None and loop is not _loop:
+        try:
+            _client.close()
+        except Exception:
+            pass
+        _client = _db = None
+        _lock = None
     if _db is None:
         import certifi
         from motor.motor_asyncio import AsyncIOMotorClient
@@ -62,6 +82,7 @@ def get_db() -> Any:
             tlsCAFile=certifi.where(),
         )
         _db = _client[DB_NAME]
+        _loop = loop
     return _db
 
 
@@ -111,6 +132,9 @@ async def _insert(collection: str, doc: dict) -> None:
 
 
 async def _flush() -> None:
+    global _lock
+    if _lock is None:
+        _lock = asyncio.Lock()
     if not _queue or _lock.locked():
         return
     async with _lock:

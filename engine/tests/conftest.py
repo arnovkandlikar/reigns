@@ -12,6 +12,21 @@ import pytest
 FIXTURES = Path(__file__).resolve().parents[2] / "shared" / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _no_real_cloud_services(monkeypatch):
+    """Tests never touch the real MongoDB Atlas / ElevenLabs, even if your shell has the keys
+    loaded from .env. Tests that need a database set their own fake (see test_store.py)."""
+    from app.learning import store
+
+    for key in ("MONGODB_URI", "ELEVENLABS_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(store, "_client", None)
+    monkeypatch.setattr(store, "_db", None)
+    monkeypatch.setattr(store, "_loop", None)
+    monkeypatch.setattr(store, "_lock", None)
+    store._queue.clear()
+
+
 @pytest.fixture
 def fixtures_dir() -> Path:
     return FIXTURES
