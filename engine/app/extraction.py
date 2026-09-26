@@ -9,7 +9,7 @@ import logging
 import re
 import uuid
 
-from app.llm import LLMError, complete_json, llm_available
+from app.llm import LLMError, complete_json, fast_model_name, llm_available
 from app.models import Claim, SessionContext
 
 log = logging.getLogger("reigns.extraction")
@@ -125,7 +125,10 @@ def _heuristic_claims(text: str, message_id: str, context: str) -> list[Claim]:
 async def _llm_claims(text: str, message_id: str, context: str) -> list[Claim]:
     prose = CODE_BLOCK.sub(" [code block omitted] ", text)
     items = await complete_json(
-        EXTRACT_SYSTEM, f"User asked:\n{context}\n\nAssistant reply:\n{prose}"
+        EXTRACT_SYSTEM,
+        f"User asked:\n{context}\n\nAssistant reply:\n{prose}",
+        max_tokens=1500,
+        model=fast_model_name(),  # G1 latency: extraction is simple, use the fast model
     )
     if not isinstance(items, list):
         raise LLMError("extraction did not return a list")
