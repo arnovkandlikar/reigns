@@ -138,6 +138,7 @@ class Session:
     async def handle(self, env: Envelope, payload) -> list[Envelope]:
         if isinstance(payload, SessionStart):
             self.ctx.app = payload.app
+            self.ctx.language = voice.language(payload.language)
             if payload.chat_key:
                 return await self._restore_chat(payload.chat_key)
             return [self._heat_env()]
@@ -355,7 +356,7 @@ class Session:
     ) -> None:
         vp = await voice.maybe_speak(
             self.voice_state, prev_level, level, bubble, self.heat.recovered(self.clock()),
-            clean=clean,
+            clean=clean, lang=self.ctx.language,
         )
         if vp and self.voice_sink:
             await self.voice_sink(envelope("voice.play", self.sid, vp))

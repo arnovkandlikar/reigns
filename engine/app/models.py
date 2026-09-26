@@ -99,6 +99,8 @@ class SessionStart(_Strict):
     # Stable id of the Claude chat this session watches: the message_id of the chat's first
     # message (position 0). Lets the engine restore that chat's heat when the user flips back.
     chat_key: Optional[str] = None
+    # Language the pet speaks: "en" (default) or "es". Unknown values fall back to English.
+    language: Optional[str] = None
 
 
 class MessageNew(_Strict):
@@ -274,6 +276,7 @@ class SessionContext(BaseModel):
 
     session_id: str
     app: str = "claude"
+    language: str = "en"  # "en" | "es" — from session.start (or REIGNS_LANGUAGE); bubble/voice copy
     messages: list[ChatMessage] = Field(default_factory=list)
     source_docs: dict[str, SourceDoc] = Field(default_factory=dict)
     claims: dict[str, Claim] = Field(default_factory=dict)
