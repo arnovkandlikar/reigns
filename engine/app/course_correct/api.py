@@ -31,6 +31,7 @@ _PROMPT_TYPES = {
 }
 _GENERIC_WORDS = frozenset({"claim", "said", "says", "answer", "source", "document"})
 _NUMBER_OR_DATE = re.compile(r"\b\d+(?:[.,]\d+)?\b|\b(?:19|20)\d{2}\b")
+_MATCH_SCORE = re.compile(r"\s*\(best (?:title )?match \d+(?:\.\d+)?\)", re.IGNORECASE)
 
 _CAUSE_COPY: dict[str, tuple[str, str, str]] = {
     "knowledge_gap": (
@@ -299,7 +300,18 @@ def _evidence_summary(verdict: ClaimVerdict) -> str:
         if result.status in ("error", "unverified", "uncertain"):
             continue
         if result.evidence:
-            return snippet(result.evidence[0].snippet, 240)
+            if result.detector == "reference_auditor":
+                missing = [
+                    item.source
+                    for item in result.evidence
+                    if item.source in ("Crossref", "OpenAlex")
+                    and item.snippet.lower().startswith("no matching work")
+                ]
+                if missing:
+                    sources = " or ".join(dict.fromkeys(missing))
+                    return f"No matching paper found in {sources}."
+            plain = _MATCH_SCORE.sub("", result.evidence[0].snippet)
+            return snippet(re.sub(r"\.{2,}", ".", plain).strip(), 240)
     return "No direct supporting quote was returned."
 
 
@@ -322,22 +334,27 @@ def _correction_text(
         evidence = _evidence_summary(verdict)
         if variant == "v2":
             issue_lines.append(
-                f"{index}. Does “{verdict.quote}” hold up? The check found: “{evidence}”"
+                f"{index}. Does this claim hold up? {verdict.quote} — Evidence: {evidence}"
             )
         elif variant == "v3":
-            issue_lines.append(f"{index}. [ ] Recheck “{verdict.quote}” against “{evidence}”")
+            issue_lines.append(f"{index}. [ ] Recheck: {verdict.quote} — Evidence: {evidence}")
         else:
-            issue_lines.append(f"{index}. “{verdict.quote}” — evidence: “{evidence}”")
+            issue_lines.append(f"{index}. Claim: {verdict.quote} — Evidence: {evidence}")
     issues = "\n".join(issue_lines) or "No active flagged claim is available to recheck."
     target_ids = list(dict.fromkeys(profile.failures + profile.blast_radius))
     source_claims = [session.claims[cid] for cid in target_ids if cid in session.claims]
-    target = "; ".join(snippet(claim.normalized, 180) for claim in source_claims[:3])
+    target = "; ".join(snippet(claim.normalized, 180).rstrip(" .!?") for claim in source_claims[:3])
     if not target:
         target = "the specific flagged points above"
 
     # FR-D2: each level keeps all five required parts, with the requested level-specific length.
     if level == 1:
-        first_issue = issue_lines[0] if issue_lines else target
+        first_issue = (
+            f"this claim: {flagged[0].quote} — Evidence: "
+            f"{_evidence_summary(flagged[0]).rstrip(' .')}"
+            if flagged
+            else target
+        )
         opening = {
             "v1": "Please check",
             "v2": "Could you verify",
