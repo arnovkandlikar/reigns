@@ -43,10 +43,16 @@ log = logging.getLogger("reigns.voice")
 
 MIN_GAP_S = 20.0
 MAX_WORDS = 15
-FULL_MAX_WORDS = 55
-FULL_MAX_PROBLEMS = 3
-SUMMARY_MAX_WORDS = 50  # explains, doesn't lecture: ~12-15 s of speech
-SUMMARY_HARD_CAP = 75  # safety net only; the prompt keeps it well under this
+# Word budgets grow with the number of problems, so EVERY problem gets said (never "and more…").
+FULL_MAX_WORDS = 55  # bubble read-out for up to 3 problems
+FULL_WORDS_PER_EXTRA = 15  # + this per problem beyond 3
+FULL_HARD_CAP = 200  # ~50 s of speech; problems get shortened before any is dropped
+PROBLEM_MAX_WORDS = 18  # one problem, read from the bubble, at most
+SUMMARY_MAX_WORDS = 50  # spoken summary for up to 3 problems: ~12-15 s of speech
+SUMMARY_WORDS_PER_EXTRA = 15
+SUMMARY_MAX_CAP = 150  # longest summary we ask for (~40 s)
+SUMMARY_SLACK = 25  # hard cap = asked-for budget + this, so it never cuts off mid-sentence
+SUMMARY_HARD_CAP = SUMMARY_MAX_WORDS + SUMMARY_SLACK  # (for ≤ 3 problems; see summary_hard_cap)
 SUMMARY_TIMEOUT_S = 8.0  # voice is fire-and-forget, so waiting a bit longer never delays a verdict
 TTS_TIMEOUT_S = 6.0
 API_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
@@ -277,16 +283,66 @@ def _sentence(text: str) -> str:
     return text if not text or text[-1] in ".!?…" else text + "."
 
 
+def full_budget(n_problems: int) -> int:
+    """Words allowed for reading the bubble aloud: grows with the number of problems."""
+    return min(FULL_HARD_CAP, FULL_MAX_WORDS + FULL_WORDS_PER_EXTRA * max(0, n_problems - 3))
+
+
+def summary_budget(n_problems: int) -> int:
+    """Words the spoken summary may use: 50 for ≤ 3 problems, +15 per extra problem, ≤ 150."""
+    return min(SUMMARY_MAX_CAP,
+               SUMMARY_MAX_WORDS + SUMMARY_WORDS_PER_EXTRA * max(0, n_problems - 3))
+
+
+def summary_hard_cap(n_problems: int) -> int:
+    return summary_budget(n_problems) + SUMMARY_SLACK
+
+
+_DANGLING = frozenset(
+    "a an the by of on in to and or with for at from is was are were that which as than but "
+    "y el la los las de del en con por para que o un una es fue".split()
+)
+
+
+def _short_problem(text: str, n: int = PROBLEM_MAX_WORDS) -> str:
+    """One problem as one short spoken sentence: its first sentence, clipped to n words."""
+    first = _SENTENCE.split(" ".join((text or "").split()))[0]
+    words = first.split()
+    if len(words) > n:
+        words = words[:n]
+        # don't end on a dangling "the"/"by"/"of"… when shortened
+        while len(words) > 3 and words[-1].lower().strip(",;:") in _DANGLING:
+            words.pop()
+        first = " ".join(words).rstrip(",;:—-") + "."
+    return _sentence(first)
+
+
 def full_line(bubble: BubbleContent) -> str:
-    """Headline + up to 3 problems + pattern, as one spoken paragraph (≤ ~70 words)."""
-    parts = [bubble.headline]
-    parts += [p.text for p in bubble.problems[:FULL_MAX_PROBLEMS]]
-    extra = len(bubble.problems) - FULL_MAX_PROBLEMS
-    parts.append(bubble.pattern_text)
-    if extra > 0:
-        parts.append("There's a bit more in the bubble.")
-    text = " ".join(_sentence(t) for t in parts if t and t.strip())
-    return clip_sentences(text, FULL_MAX_WORDS)
+    """Headline + EVERY problem + pattern, as one spoken paragraph. Long lists get shorter
+    problem sentences (then no pattern line) rather than dropping problems."""
+    n = len(bubble.problems)
+    budget = full_budget(n)
+
+    def build(per_problem: int, with_pattern: bool, problems) -> str:
+        parts = [bubble.headline] + [_short_problem(p.text, per_problem) for p in problems]
+        if with_pattern:
+            parts.append(bubble.pattern_text)
+        return " ".join(_sentence(t) for t in parts if t and t.strip())
+
+    for per_problem, with_pattern in ((PROBLEM_MAX_WORDS, True), (PROBLEM_MAX_WORDS, False),
+                                      (10, False), (6, False)):
+        text = build(per_problem, with_pattern, bubble.problems)
+        if len(text.split()) <= budget:
+            return text
+    # A truly huge list (dozens): say as many as fit, then how many are left.
+    kept = list(bubble.problems)
+    while kept:
+        kept.pop()
+        rest = n - len(kept)
+        text = build(6, False, kept) + f" Plus {rest} more problems like these."
+        if len(text.split()) <= budget:
+            return text
+    return clip_sentences(bubble.headline, budget)
 
 
 def spanish_fallback(bubble: BubbleContent) -> str:
@@ -328,7 +384,8 @@ def line_for(
         text = spanish_fallback(bubble) if spanish else full_line(bubble)
         if p in ("cowboy", "unicorn"):
             first = opener or OPENERS_BY_LANG[language(lang)][p][0]
-            return clip_sentences(f"{first} {text}", FULL_MAX_WORDS)
+            return clip_sentences(f"{first} {text}",
+                                  full_budget(len(bubble.problems)) + len(first.split()))
         return text
     return None
 
@@ -353,9 +410,10 @@ _SUMMARY_SYSTEM = {
     ),
 }
 _SUMMARY_RULES = (
-    "Explain the notes below out loud IN YOUR OWN WORDS; don't read them back. 2-3 sentences, "
-    "about {n} words at most. Cover: what Claude got wrong (every problem, similar ones grouped, "
-    "e.g. 'two made-up papers and a broken link'); briefly why it's wrong or what the real answer "
+    "Explain the notes below out loud IN YOUR OWN WORDS; don't read them back. About {n} words "
+    "at most ({sentences} sentences). Cover: what Claude got wrong, EVERY one of the {count} "
+    "problem(s) (none left out; group similar ones, e.g. 'two made-up papers and three wrong "
+    "dates'); briefly why it's wrong or what the real answer "
     "is, using the evidence source if given (e.g. 'Wikipedia says 1889'); and what the user should "
     "do next. Elaborate a little, but don't list every detail. Always finish your last sentence. "
     "Spoken English only: no lists, markdown, emojis, URLs, stage directions, or quotation marks "
@@ -377,11 +435,11 @@ def _summary_input(bubble: BubbleContent) -> str:
     return "\n".join(lines)
 
 
-def _clean_spoken(text: str) -> str:
+def _clean_spoken(text: str, cap: int = SUMMARY_HARD_CAP) -> str:
     text = re.sub(r"[*_#`>\[\]]", "", text or "")
     text = re.sub(r"https?://\S+", "", text)
     text = " ".join(text.split()).strip().strip('"').strip()
-    return clip_sentences(text, SUMMARY_HARD_CAP)
+    return clip_sentences(text, cap)
 
 
 _SPANISH = (
@@ -396,7 +454,9 @@ async def summarize(
     bubble: BubbleContent, opener: Optional[str] = None, lang: Optional[str] = None,
     p: Optional[str] = None,
 ) -> Optional[str]:
-    """Natural spoken summary of the whole bubble via the fast model. None if unavailable/slow."""
+    """Natural spoken summary of the whole bubble via the fast model. None if unavailable/slow.
+    The word budget grows with the number of problems so every one of them gets covered."""
+    n = len(bubble.problems)
     try:
         from app import llm
         if not llm.llm_available():
@@ -404,11 +464,12 @@ async def summarize(
         raw = await asyncio.wait_for(
             llm.complete_text(
                 _SUMMARY_SYSTEM[p or style()],
-                _SUMMARY_RULES.format(n=SUMMARY_MAX_WORDS)
+                _SUMMARY_RULES.format(n=summary_budget(n), count=max(n, 1),
+                                      sentences="2-3" if n <= 3 else "3-5")
                 + (_SPANISH if language(lang) == "es" else "")
                 + (f' Start with exactly these words: "{opener}"' if opener else "")
                 + "\n\n" + _summary_input(bubble),
-                max_tokens=300,
+                max_tokens=600,  # room for ~150 words, incl. Spanish
                 model=llm.fast_model_name(),
             ),
             timeout=SUMMARY_TIMEOUT_S,
@@ -416,7 +477,7 @@ async def summarize(
     except Exception as exc:  # LLMError, timeout, anything: fall back to reading the bubble
         log.warning("voice: summary failed (%r), reading the bubble instead", exc)
         return None
-    text = _clean_spoken(raw)
+    text = _clean_spoken(raw, summary_hard_cap(n))
     return text if len(text.split()) >= 4 else None
 
 
