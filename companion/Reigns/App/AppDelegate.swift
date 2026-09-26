@@ -12,6 +12,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var engine: EngineClient!
     private var inserter: ComposerInserter!
     private let voice = VoicePlayer()
+    /// Last line the engine spoke in this chat, for the bubble's replay button.
+    private var lastVoice: VoicePlay?
+    private let onboarding = OnboardingWindow()
+    private var mock: MockEngine!
     /// Assistant replies sent to the engine and still waiting for verdicts (drives the thinking bubble).
     private var scanning: [String: DispatchWorkItem] = [:]
     private static let scanTimeout: TimeInterval = 30
@@ -21,11 +25,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         rules = AXRules.load()
 
-        // FR-A10 (onboarding sheet) comes later; for now just trigger the system prompt.
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        state.axTrusted = AXIsProcessTrustedWithOptions(options)
+        // FR-A10: explain the permission before asking for it (instead of the bare system prompt).
+        state.axTrusted = AXIsProcessTrusted()
+        onboarding.onTrusted = { [weak self] in
+            self?.state.axTrusted = true
+            self?.apply()
+        }
         if !state.axTrusted {
-            Log.app.warning("Not AX-trusted; window tracking disabled until permission is granted")
+            Log.app.warning("Not AX-trusted; showing onboarding")
+            onboarding.show()
         }
 
         pet = PetPanelController(inset: rules.petInsetPx)
@@ -44,14 +52,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.finishScan(verdicts.messageID)
         }
         engine.onError = { [weak self] _ in self?.clearScans() }
+        pet.onReplayVoice = { [weak self] in
+            guard let self, let line = self.lastVoice else { return }
+            self.voice.play(line)  // an explicit replay plays even when muted
+        }
+        pet.onToggleMute = { [weak self] in
+            guard let self else { return }
+            self.state.isVoiceMuted.toggle()
+            if self.state.isVoiceMuted { self.voice.stop() }
+        }
         engine.onVoice = { [weak self] line in
+            self?.lastVoice = line
+            self?.pet.model.hasVoiceLine = true
             guard let self, !self.state.isVoiceMuted, !self.state.isPaused else { return }
             self.voice.play(line)
         }
         pet.onDisagree = { [weak self] claimID in self?.engine.sendDisagree(claimID: claimID) }
         inserter = ComposerInserter(composerDOMClass: rules.composerDOMClass)
         pet.onFixIt = { [weak self] correction, mode in self?.fixIt(correction, mode: mode) }
-        engine.start()
+        mock = MockEngine(engine: engine)
+        mock.onNewChat = { [weak self] _ in
+            self?.clearScans()
+            self?.pet.resetForNewConversation()
+            self?.lastVoice = nil
+        }
+        mock.onScanning = { [weak self] scanning in self?.pet.setScanning(scanning) }
+        if MockEngine.isEnabledAtLaunch {
+            state.isMockEngine = true
+            engine.setMockStatus()
+            mock.start()  // FR-A11: fixtures instead of the engine
+        } else {
+            engine.start()
+        }
 
         watcher = ConversationWatcher(reader: ConversationReader(rules: rules.conversation))
         watcher.onMessage = { [weak self] completed in
@@ -62,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.engine.startNewSession(chatKey: chatKey)
             self?.clearScans()
             self?.pet.resetForNewConversation()
+            self?.lastVoice = nil
         }
 
         monitor = ClaudeAppMonitor(claudeBundleID: rules.claudeBundleID)
@@ -194,6 +227,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? "unknown"
     }
 
+    /// FR-A11: switch between the real engine and fixture replay without restarting.
+    func setMockEngine(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: "mockEngine")
+        state.isMockEngine = on
+        clearScans()
+        pet.resetForNewConversation()
+        if on {
+            watcher.stop()
+            engine.stop()
+            engine.setMockStatus()
+            mock.start()
+        } else {
+            mock.stop()
+            engine.startNewSession(chatKey: nil)
+            engine.start()
+            apply()
+        }
+    }
+
+    func stopVoice() {
+        voice.stop()
+    }
+
+    /// Menu: reopen the FR-A10 onboarding window.
+    func showOnboarding() {
+        onboarding.show()
+    }
+
     func togglePause() {
         state.isPaused.toggle()
         apply()
@@ -212,7 +273,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ConversationReader.enableAccessibility(pid: app.processIdentifier)  // FR-A3
         tracker.start(pid: app.processIdentifier)
         dockTracker.start()
-        watcher.start(pid: app.processIdentifier)  // FR-A4
+        if !state.isMockEngine {
+            watcher.start(pid: app.processIdentifier)  // FR-A4 (mock mode doesn't read Claude)
+        }
         pet.wantsVisible = true
     }
 }

@@ -12,10 +12,13 @@ struct ReignsApp: App {
                 appDelegate.togglePause()
             }
             if !state.axTrusted {
-                Text("Accessibility permission needed")
+                Button("Set Up Accessibility…") { appDelegate.showOnboarding() }  // FR-A10
             }
             Text("Engine: \(state.engineStatus.rawValue)")
             Toggle("Mute Voice", isOn: $state.isVoiceMuted)
+                .onChange(of: state.isVoiceMuted) { _, muted in
+                    if muted { appDelegate.stopVoice() }
+                }
             #if DEBUG
             Menu("Preview Level") {
                 ForEach(0..<5) { level in
@@ -23,6 +26,10 @@ struct ReignsApp: App {
                 }
                 Button("Recovered") { appDelegate.previewRecovered() }
                 Button("Scanning (thinking)") { appDelegate.previewScanning() }
+                Button("Onboarding Window") { appDelegate.showOnboarding() }
+                Toggle("Mock Engine (fixtures)", isOn: Binding(
+                    get: { state.isMockEngine },
+                    set: { appDelegate.setMockEngine($0) }))
             }
             Button("Log Conversation") { appDelegate.logConversation() }
             #endif
@@ -41,6 +48,8 @@ final class AppState {
     var isPaused = false
     var axTrusted = false
     var engineStatus = EngineClient.Status.offline
+    /// FR-A11: replaying fixtures instead of the engine.
+    var isMockEngine = false
     var isVoiceMuted = UserDefaults.standard.bool(forKey: "voiceMuted") {
         didSet { UserDefaults.standard.set(isVoiceMuted, forKey: "voiceMuted") }
     }

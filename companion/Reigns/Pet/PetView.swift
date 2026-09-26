@@ -25,6 +25,8 @@ enum PetExpression: Equatable {
 /// Eyes, eyebrows and mouth are separate views so each expression swaps them independently.
 struct PetView: View {
     let model: PetViewModel
+    /// Off for decorative uses (e.g. onboarding), where a heat number means nothing.
+    var showsHeatBadge = true
 
     /// The horse is drawn in 64×84 base points, then scaled up.
     static let scale: CGFloat = 2
@@ -58,6 +60,11 @@ struct PetView: View {
         return PetExpression(level: level, recovered: recovered) == .meltdown ? 16 * scale : 0
     }
 
+    /// "Click me!" when there's an unopened issue (the thinking bubble takes the spot while scanning).
+    private var showsClickMe: Bool {
+        model.hasUnseenIssue && !model.isScanning && !model.isBubbleOpen
+    }
+
     private var expression: PetExpression {
         PetExpression(level: model.level, recovered: model.isRecovered)
     }
@@ -74,7 +81,13 @@ struct PetView: View {
                                 time: timeline.date.timeIntervalSinceReferenceDate)
                 }
                 .overlay(alignment: .topTrailing) {
-                    HeatBadge(heat: model.heat).offset(x: 14, y: -2)
+                    if showsHeatBadge { HeatBadge(heat: model.heat).offset(x: 14, y: -2) }
+                }
+                .overlay {
+                    ClickMeCallout(time: timeline.date.timeIntervalSinceReferenceDate)
+                        .opacity(showsClickMe ? 1 : 0)
+                        .scaleEffect(showsClickMe ? 1 : 0.6, anchor: .bottomLeading)
+                        .animation(.spring(response: 0.35, dampingFraction: 0.6), value: showsClickMe)
                 }
                 .overlay {
                     ThoughtBubble(time: timeline.date.timeIntervalSinceReferenceDate)
@@ -366,6 +379,47 @@ private struct Mouth: View {
     }
 
     private var stroke: StrokeStyle { StrokeStyle(lineWidth: 1.8, lineCap: .round) }
+}
+
+// MARK: - "Click me!" callout
+
+/// Small speech bubble above the head, bobbing gently, when there's an issue the user hasn't
+/// opened yet. Same spot as the thinking bubble (they never show together).
+private struct ClickMeCallout: View {
+    let time: TimeInterval
+
+    var body: some View {
+        let bob = CGFloat(sin(time * 2 * .pi / 1.2)) * 1.5
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Click me!")
+                .font(.system(size: 9, weight: .heavy, design: .rounded))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color.orange))
+                .overlay(Capsule().strokeBorder(Color.white, lineWidth: 1))
+            // Tail pointing down at the horse.
+            CalloutTail()
+                .fill(Color.orange)
+                .frame(width: 7, height: 5)
+                .padding(.leading, 8)
+        }
+        .fixedSize()
+        .offset(y: bob)
+        .position(x: 44, y: -25)
+        .frame(width: 64, height: 84)
+    }
+}
+
+private struct CalloutTail: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            p.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            p.addLine(to: CGPoint(x: rect.minX + rect.width * 0.25, y: rect.maxY))
+            p.closeSubpath()
+        }
+    }
 }
 
 // MARK: - Scanning thought bubble

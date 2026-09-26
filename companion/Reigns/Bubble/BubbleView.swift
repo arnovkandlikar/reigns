@@ -7,6 +7,8 @@ struct BubbleActions {
     var fixChoice: (Correction, ComposerInserter.Mode?) -> Void
     var disagree: (BubbleProblem) -> Void
     var dismiss: () -> Void
+    var replayVoice: () -> Void = {}
+    var toggleMute: () -> Void = {}
 }
 
 /// FR-A8: speech bubble above the pet. Shows bubble.content with Fix it (only when a correction is
@@ -98,6 +100,7 @@ struct BubbleView: View {
                     .font(.system(size: 11, weight: .medium))
                     .help(content.confidenceReason)
             }
+            voiceControls
         }
         .foregroundStyle(.secondary)
     }
@@ -117,6 +120,29 @@ struct BubbleView: View {
                 Button("Cancel") { actions.fixChoice(correction, nil) }
             }
             .controlSize(.small)
+        }
+    }
+
+    /// Replay the horse's last spoken line, and mute/unmute its voice.
+    private var voiceControls: some View {
+        let muted = AppState.shared.isVoiceMuted
+        return HStack(spacing: 2) {
+            Button(action: actions.replayVoice) {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 20, height: 18)
+            }
+            .buttonStyle(.borderless)
+            .disabled(!model.hasVoiceLine)
+            .help(model.hasVoiceLine ? "Replay what the horse said" : "Nothing to replay yet")
+
+            Button(action: actions.toggleMute) {
+                Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 20, height: 18)
+            }
+            .buttonStyle(.borderless)
+            .help(muted ? "Unmute the horse's voice" : "Mute the horse's voice")
         }
     }
 

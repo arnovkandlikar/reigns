@@ -17,6 +17,9 @@ final class PetPanelController {
     var onDisagree: ((String) -> Void)?
     /// FR-A9: Fix it (mode nil = not chosen yet; the app delegate checks the message box first).
     var onFixIt: ((Correction, ComposerInserter.Mode?) -> Void)?
+    /// Bubble voice controls.
+    var onReplayVoice: (() -> Void)?
+    var onToggleMute: (() -> Void)?
 
     /// Set by the app delegate: true while Claude is frontmost and Reigns isn't paused.
     var wantsVisible = false {
@@ -55,6 +58,7 @@ final class PetPanelController {
             model.isRecovered = recovered
         }
         model.bubble = bubble
+        model.hasUnseenIssue = level >= 1 && !model.isBubbleOpen
         positionBubble(animated: true)
     }
 
@@ -78,6 +82,12 @@ final class PetPanelController {
 
     func apply(_ bubble: BubbleContent) {
         model.bubble = bubble
+        // Something's wrong and the user hasn't looked yet: nudge them to click.
+        if (bubble.level >= 1 || !bubble.problems.isEmpty) && !model.isBubbleOpen {
+            model.hasUnseenIssue = true
+        } else if bubble.level == 0 && bubble.problems.isEmpty {
+            model.hasUnseenIssue = false
+        }
     }
 
     /// Merges a reply's verdicts into the conversation's claim list (replacing re-checked claims).
@@ -103,6 +113,8 @@ final class PetPanelController {
         model.unverifiedCount = 0
         model.bubble = nil
         model.claims = []
+        model.hasUnseenIssue = false
+        model.hasVoiceLine = false
         positionBubble(animated: true)
     }
 
@@ -187,6 +199,7 @@ final class PetPanelController {
 
     private func openBubble() {
         model.isBubbleOpen = true
+        model.hasUnseenIssue = false
         model.isDetailsOpen = false
         model.pendingFix = nil
         model.fixNote = nil
@@ -217,7 +230,9 @@ final class PetPanelController {
                 Log.pet.info("I disagree tapped for claim \(problem.claimID, privacy: .public)")
                 self?.onDisagree?(problem.claimID)
             },
-            dismiss: { [weak self] in self?.closeBubble() })
+            dismiss: { [weak self] in self?.closeBubble() },
+            replayVoice: { [weak self] in self?.onReplayVoice?() },
+            toggleMute: { [weak self] in self?.onToggleMute?() })
         let tailEdge: HorizontalEdge = PetSide.saved == .right ? .trailing : .leading
         bubblePanel.setContent(BubbleView(model: model, actions: actions, tailEdge: tailEdge))
     }
