@@ -65,3 +65,27 @@ async def test_llm_path_drops_hedges(monkeypatch):
     monkeypatch.setattr(extraction, "complete_json", fake_json)
     claims = await extract_claims(session_with(text), "a", text)
     assert [c.quote for c in claims] == ["The Eiffel Tower was completed in 1889."]
+
+
+async def test_private_context_claims_are_not_checked(monkeypatch):
+    """docs/requests.md 04:55: claims about the user's own repo/project are skipped."""
+    text = ("Your repo has 19 new commits and Role C added the Consistency Probe. "
+            "The Eiffel Tower was completed in 1889. See Vaswani et al. (2017).")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+
+    async def fake_json(*a, **k):
+        return [
+            {"quote": "Your repo has 19 new commits", "normalized": "a", "type": "number",
+             "risk": "high", "scope": "private"},
+            {"quote": "Role C added the Consistency Probe", "normalized": "b", "type": "fact",
+             "risk": "high", "scope": "private"},
+            {"quote": "The Eiffel Tower was completed in 1889.", "normalized": "c",
+             "type": "number", "risk": "high", "scope": "public"},
+            {"quote": "Vaswani et al. (2017)", "normalized": "d", "type": "paper",
+             "risk": "high", "scope": "private"},  # references are always checked
+        ]
+
+    monkeypatch.setattr(extraction, "complete_json", fake_json)
+    claims = await extract_claims(session_with(text), "a", text)
+    assert sorted(c.quote for c in claims) == ["The Eiffel Tower was completed in 1889.",
+                                               "Vaswani et al. (2017)"]

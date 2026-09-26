@@ -51,7 +51,8 @@ Return a JSON array (max 12 items). Each item:
  "normalized": "<standalone restatement that makes sense without context>",
  "type": "fact|paper|url|package|number|other",
  "risk": "high|medium|low",
- "question": "<the claim as a short question, or null>"}
+ "question": "<the claim as a short question, or null>",
+ "scope": "public|private"}
 Rules:
 - quote MUST be copied character-for-character from the reply.
 - Each cited paper, URL and software package is its own claim (type paper/url/package).
@@ -61,6 +62,12 @@ Rules:
   ("I'm not confident those papers exist", "I don't know of any work on X"), apologies,
   self-corrections, and refusals. They are honest hedges, not checkable claims. If such a
   sentence also names a specific paper, URL or package, extract only that reference.
+- scope "private" = only knowable from the user's own context: their project, repo, commits,
+  files, code, company, notes, team, or anything stated earlier in THIS conversation
+  (e.g. "your repo has 19 new commits", "Role C added the Consistency Probe",
+  "your function returns None"). These cannot be checked against public sources, so mark
+  them private. Everything checkable in public sources (encyclopedias, papers, docs,
+  registries, the news) is "public". A cited paper, URL or package is always public.
 - Do not extract claims from inside code blocks."""
 
 
@@ -160,6 +167,12 @@ async def _llm_claims(text: str, message_id: str, context: str) -> list[Claim]:
     out: list[Claim] = []
     for it in items:
         if not isinstance(it, dict):
+            continue
+        # FR-B4: claims about the user's own private context can't be checked against public
+        # sources; checking them only produces false alarms (docs/requests.md 04:55, Role A).
+        if str(it.get("scope", "public")).lower() == "private" and it.get("type") not in (
+            "paper", "url", "package"
+        ):
             continue
         quote = repair_quote(str(it.get("quote", "")), text)
         if not quote:

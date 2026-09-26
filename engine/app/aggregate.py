@@ -7,6 +7,10 @@ from __future__ import annotations
 from app.models import Claim, ClaimVerdict, DetectorResult, FinalStatus
 
 DEFAULT_NOT_IN_SOURCE_RED = 0.8  # FR-L4 (Role D) may raise this per detector
+# §8.4 "likely_hallucination AND Claim Verifier found no supporting evidence → red": with no
+# evidence either way, only very scattered answers count as red; otherwise amber (precision
+# rule "when in doubt → amber"; docs/requests.md 04:55 from Role A).
+LIKELY_HALLUCINATION_RED = 0.85
 
 
 def final_status(
@@ -32,7 +36,8 @@ def final_status(
             return "red"
         if r.status == "not_in_source" and r.confidence >= not_in_source_red:
             return "red"
-    if "likely_hallucination" in statuses and cv_found_no_support:
+    lh = [r for r in usable if r.status == "likely_hallucination"]
+    if lh and cv_found_no_support and max(r.confidence for r in lh) >= LIKELY_HALLUCINATION_RED:
         return "red"
 
     # 🟠 amber

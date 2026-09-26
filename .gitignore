@@ -18,6 +18,7 @@ engine/reigns.db
 engine/*.db
 engine/*.db-journal
 engine/logs/*.log
+engine/logs/*.mp3
 engine/.voice_cache/
 
 # macOS / Xcode (Role A)
