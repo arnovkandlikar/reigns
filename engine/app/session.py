@@ -144,8 +144,21 @@ class Session:
 
     async def _on_assistant(self, msg: MessageNew) -> list[Envelope]:
         t0 = time.perf_counter()
-        claims = [triage.assign_risk(c) for c in await extraction.extract_claims(
+        # G1 latency: unambiguous references start their checks right away, overlapping with
+        # the (slower) LLM extraction instead of waiting for it.
+        fast = [triage.assign_risk(c) for c in extraction.fast_reference_claims(
             self.ctx, msg.message_id, msg.text)]
+        for c in fast:
+            self.ctx.claims[c.claim_id] = c
+        fast_jobs = [(c, name) for c in fast for name in triage.route(c)]
+        fast_task = asyncio.ensure_future(self._run_stage(fast_jobs))
+        try:
+            rest = [triage.assign_risk(c) for c in await extraction.extract_claims(
+                self.ctx, msg.message_id, msg.text, exclude=fast)]
+        except BaseException:
+            fast_task.cancel()
+            raise
+        claims = fast + rest
         routes: dict[str, list[str]] = {c.claim_id: triage.route(c) for c in claims}
         if self.pending_pushback:  # FR-C4: check this reply for caving
             pb = self._pushback_claim(msg)
@@ -156,10 +169,14 @@ class Session:
             self.ctx.claims[c.claim_id] = c
         t_extract = time.perf_counter()
 
-        # Stage 1 — all detectors for all claims concurrently (FR-B5)
-        jobs = [(c, name) for c in claims for name in routes[c.claim_id]]
+        # Stage 1 — all detectors for all claims concurrently (FR-B5); fast-path jobs are
+        # already running, the rest start now.
+        fast_ids = {c.claim_id for c in fast}
+        jobs = [(c, name) for c in claims if c.claim_id not in fast_ids
+                for name in routes[c.claim_id]]
         results: dict[str, list[DetectorResult]] = {c.claim_id: [] for c in claims}
-        for (c, _), r in zip(jobs, await self._run_stage(jobs)):
+        rest_results, fast_results = await asyncio.gather(self._run_stage(jobs), fast_task)
+        for (c, _), r in list(zip(jobs, rest_results)) + list(zip(fast_jobs, fast_results)):
             if r is not None:
                 results[c.claim_id].append(r)
         # Stage 2 — Consistency Probe where Claim Verifier found no evidence (FR-B4)

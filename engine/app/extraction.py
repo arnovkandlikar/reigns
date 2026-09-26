@@ -183,9 +183,65 @@ async def _llm_claims(text: str, message_id: str, context: str) -> list[Claim]:
     return out
 
 
-async def extract_claims(session: SessionContext, message_id: str, text: str) -> list[Claim]:
+# ---------------------------------------------------------------------------
+# Fast path (G1 latency): unambiguous references found instantly, without the LLM, so the
+# Reference Auditor can start while LLM extraction is still running (see session.py).
+# Deliberately conservative: a paper needs a quoted title AND (year / et al. / DOI), so a
+# random "(2019)" in prose never becomes a paper claim.
+# ---------------------------------------------------------------------------
+_QUOTED_TITLE = re.compile(r"[\"“]([^\"”]{10,})[\"”]")
+
+
+def _context(session: SessionContext, message_id: str) -> str:
     user_msg = session.previous(message_id, "user")
-    context = (user_msg.text if user_msg else "")[:CONTEXT_CHARS]
+    return (user_msg.text if user_msg else "")[:CONTEXT_CHARS]
+
+
+def fast_reference_claims(session: SessionContext, message_id: str, text: str) -> list[Claim]:
+    context = _context(session, message_id)
+    prose = CODE_BLOCK.sub(" ", text)
+    out: list[Claim] = []
+    seen: set[str] = set()
+
+    def add(quote: str, ctype: str, normalized: str) -> None:
+        if not quote or quote in seen or quote not in text or is_hedge(quote):
+            return
+        seen.add(quote)
+        out.append(Claim(claim_id=_new_id(), message_id=message_id, quote=quote,
+                         normalized=normalized, type=ctype,  # type: ignore[arg-type]
+                         risk="high", context=context))
+
+    for line in prose.splitlines():
+        m = PAPER.search(line)
+        if not m:
+            continue
+        quote = m.group(0).strip().strip("-*•0123456789. ").strip()
+        title = _QUOTED_TITLE.search(quote)
+        if title:
+            add(quote, "paper", f"The paper '{title.group(1).strip()}' exists.")
+    for m in URL.finditer(prose):
+        url = m.group(0).rstrip(".,;:!?")
+        add(url, "url", f"The URL {url} exists.")
+    for m in PIP.finditer(text):
+        add(m.group(1), "package", f"The Python package '{m.group(1)}' exists on PyPI.")
+    return out[:MAX_CLAIMS]
+
+
+def overlaps(claim: Claim, ref: Claim) -> bool:
+    """True if `claim` (from the LLM/heuristic) is the same reference as fast-path `ref`."""
+    a, b = claim.quote.lower(), ref.quote.lower()
+    if a in b or b in a:
+        return True
+    title = _QUOTED_TITLE.search(ref.quote)
+    return bool(title and title.group(1).lower() in a)
+
+
+async def extract_claims(
+    session: SessionContext, message_id: str, text: str, exclude: list[Claim] | None = None
+) -> list[Claim]:
+    """Full extraction. `exclude` = fast-path claims already being checked; overlapping
+    claims are dropped so the same reference is never checked twice."""
+    context = _context(session, message_id)
 
     claims = _code_claims(text, message_id, context)
     prose_claims: list[Claim] = []
@@ -198,7 +254,9 @@ async def extract_claims(session: SessionContext, message_id: str, text: str) ->
         prose_claims = _heuristic_claims(text, message_id, context)
 
     prose_claims = [c for c in prose_claims if not is_hedge(c.quote)]
-    claims = (claims + prose_claims)[:MAX_CLAIMS]
+    exclude = exclude or []
+    prose_claims = [c for c in prose_claims if not any(overlaps(c, r) for r in exclude)]
+    claims = (claims + prose_claims)[: max(0, MAX_CLAIMS - len(exclude))]
     tag_source_summary(session, message_id, claims)
     return claims
 
