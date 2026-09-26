@@ -4,6 +4,10 @@ import Observation
 @MainActor
 @Observable
 final class PetViewModel {
+    /// Charlie or Marley (menu › Character).
+    var character = PetCharacter.saved
+    /// True while switching characters (the old one has sunk out of view).
+    var isCharacterHidden = false
     var level = 0
     var heat = 0
     /// Latest bubble.content from the engine; nil until the engine has said anything.

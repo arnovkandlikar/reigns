@@ -74,7 +74,7 @@ struct PetView: View {
         // expression changes animate with a spring (see PetPanelController).
         TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
             let motion = HorseMotion(expression: expression, time: timeline.date.timeIntervalSinceReferenceDate)
-            HorseFace(expression: expression, motion: motion)
+            HorseFace(expression: expression, motion: motion, character: model.character)
                 .frame(width: Self.baseHorseSize.width, height: Self.baseHorseSize.height)
                 .overlay {
                     Accessories(expression: expression, unverified: model.unverifiedCount,
@@ -90,7 +90,8 @@ struct PetView: View {
                         .animation(.spring(response: 0.35, dampingFraction: 0.6), value: showsClickMe)
                 }
                 .overlay {
-                    ThoughtBubble(time: timeline.date.timeIntervalSinceReferenceDate)
+                    ThoughtBubble(time: timeline.date.timeIntervalSinceReferenceDate,
+                                  hasHorn: model.character == .marley)
                         .opacity(model.isScanning ? 1 : 0)
                         .scaleEffect(model.isScanning ? 1 : 0.6, anchor: .bottomLeading)
                         .animation(.spring(response: 0.35, dampingFraction: 0.7), value: model.isScanning)
@@ -101,6 +102,10 @@ struct PetView: View {
                 .scaleEffect(Self.scale)
                 .frame(width: Self.horseSize.width, height: Self.horseSize.height)
                 .offset(y: (Self.baseHorseSize.height - Self.baseVisibleHeight(expression)) * Self.scale)
+                // Switching characters: sink fully out of view, then come back as the other one.
+                .offset(y: model.isCharacterHidden ? Self.horseSize.height + 40 : 0)
+                // Rebuild the whole horse per character so nothing carries over between them.
+                .id(model.character)
         }
         .frame(width: Self.panelSize.width, height: Self.panelSize.height, alignment: .bottom)
         .clipped()
@@ -118,8 +123,11 @@ private struct HorseMotion {
     /// 0 = closed, 1 = open (Calm blinks every 4 s).
     var eyeOpenness: CGFloat = 1
     var spiralSpin: Angle = .zero
+    /// Raw time, for effects that run at every level (Marley's sparkles).
+    var time: TimeInterval = 0
 
     init(expression: PetExpression, time t: TimeInterval) {
+        time = t
         func wave(_ period: Double) -> CGFloat { CGFloat(sin(2 * .pi * t / period)) }
 
         switch expression {
@@ -156,8 +164,13 @@ private struct HorsePalette {
     let muzzle: Color
     let innerEar: Color
 
-    init(_ expression: PetExpression) {
+    init(_ expression: PetExpression, character: PetCharacter = .charlie) {
+        // (A `where` clause only guards the last pattern, so the Marley check is on both cases.)
         switch expression {
+        case .calm where character == .marley, .recovered where character == .marley:  // pearly white unicorn
+            coat = Color(red: 0.99, green: 0.97, blue: 0.98)
+            muzzle = Color(red: 1.00, green: 0.87, blue: 0.91)
+            innerEar = Color(red: 1.00, green: 0.72, blue: 0.84)
         case .calm, .recovered:  // brown
             coat = Color(red: 0.55, green: 0.34, blue: 0.20)
             muzzle = Color(red: 0.80, green: 0.64, blue: 0.50)
@@ -186,28 +199,42 @@ private struct HorsePalette {
 private struct HorseFace: View {
     let expression: PetExpression
     let motion: HorseMotion
+    let character: PetCharacter
+
+    private var isMarley: Bool { character == .marley }
 
     var body: some View {
-        let palette = HorsePalette(expression)
+        let palette = HorsePalette(expression, character: character)
         ZStack {
             // Ears sit behind the head.
             HStack(spacing: 18) {
-                Ear(palette: palette)
-                Ear(palette: palette)
+                Ear(palette: palette, outlined: isMarley)
+                Ear(palette: palette, outlined: isMarley)
             }
             .offset(y: -33)
 
             // Head: tall rounded shape.
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .fill(palette.coat)
+                .overlay {
+                    if isMarley {  // soft outline so the white coat reads on light backgrounds
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .strokeBorder(Color(red: 0.93, green: 0.70, blue: 0.84), lineWidth: 1)
+                    }
+                }
                 .frame(width: 46, height: 70)
                 .offset(y: 6)
 
-            // Forelock tuft between the ears.
-            Ellipse()
-                .fill(HorsePalette.mane)
-                .frame(width: 20, height: 14)
-                .offset(y: -26)
+            // Forelock tuft between the ears (Marley: horn, and a rainbow mane framing her face).
+            if isMarley {
+                UnicornHorn().frame(width: 8, height: 19).offset(y: -39)
+                MarleyMane()
+            } else {
+                Ellipse()
+                    .fill(HorsePalette.mane)
+                    .frame(width: 20, height: 14)
+                    .offset(y: -26)
+            }
 
             // Muzzle with nostrils.
             Ellipse()
@@ -222,13 +249,24 @@ private struct HorseFace: View {
 
             Mouth(expression: expression).offset(y: 34)
 
+            if isMarley {
+                // Rosy cheeks.
+                HStack(spacing: 24) {
+                    Ellipse().fill(Color(red: 1, green: 0.45, blue: 0.55).opacity(0.45)).frame(width: 8, height: 5)
+                    Ellipse().fill(Color(red: 1, green: 0.45, blue: 0.55).opacity(0.45)).frame(width: 8, height: 5)
+                }
+                .offset(y: 6)
+            }
+
             HStack(spacing: 18) {
                 Eye(expression: expression, isRight: false, openness: motion.eyeOpenness, spin: motion.spiralSpin,
                     lid: palette.coat)
                     .frame(width: 13, height: 13)
+                    .overlay(alignment: .top) { if isMarley { Lashes(isRight: false) } }
                 Eye(expression: expression, isRight: true, openness: motion.eyeOpenness, spin: motion.spiralSpin,
                     lid: palette.coat)
                     .frame(width: 13, height: 13)
+                    .overlay(alignment: .top) { if isMarley { Lashes(isRight: true) } }
             }
             .offset(y: -6)
 
@@ -237,16 +275,180 @@ private struct HorseFace: View {
                 Eyebrow(expression: expression, isRight: true)
             }
             .offset(y: -16)
+
+            if isMarley {
+                Sparkles(time: motion.time)
+            }
+        }
+    }
+}
+
+// MARK: - Marley
+
+/// Fuller forelock swept to one side, plus locks falling down both sides of the face.
+private struct MarleyMane: View {
+    /// Pastel rainbow: pink → lavender → sky blue.
+    static let rainbow = [Color(red: 1.00, green: 0.62, blue: 0.80),
+                          Color(red: 0.76, green: 0.62, blue: 1.00),
+                          Color(red: 0.55, green: 0.80, blue: 1.00)]
+
+    var body: some View {
+        ZStack {
+            Ellipse()
+                .fill(LinearGradient(colors: Self.rainbow, startPoint: .leading, endPoint: .trailing))
+                .frame(width: 26, height: 16)
+                .rotationEffect(.degrees(-12))
+                .offset(x: -2, y: -25)
+            HairLock()
+                .fill(LinearGradient(colors: Self.rainbow, startPoint: .top, endPoint: .bottom))
+                .frame(width: 9, height: 34)
+                .scaleEffect(x: -1)
+                .offset(x: -23, y: -7)
+            HairLock()
+                .fill(LinearGradient(colors: Self.rainbow, startPoint: .top, endPoint: .bottom))
+                .frame(width: 9, height: 34)
+                .offset(x: 23, y: -7)
+        }
+    }
+}
+
+/// A lock of hair: wide at the root, tapering down and curling outward (right) at the tip.
+private struct HairLock: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            let w = rect.width, h = rect.height
+            p.move(to: CGPoint(x: w * 0.1, y: 0))
+            p.addQuadCurve(to: CGPoint(x: w * 0.75, y: h * 0.05), control: CGPoint(x: w * 0.45, y: -h * 0.03))
+            // Outer edge flows down and flicks out at the tip.
+            p.addCurve(to: CGPoint(x: w, y: h),
+                       control1: CGPoint(x: w * 0.95, y: h * 0.4), control2: CGPoint(x: w * 0.6, y: h * 0.8))
+            // Inner edge back up, thinner.
+            p.addCurve(to: CGPoint(x: w * 0.1, y: 0),
+                       control1: CGPoint(x: w * 0.3, y: h * 0.75), control2: CGPoint(x: 0, y: h * 0.35))
+            p.closeSubpath()
+        }
+    }
+}
+
+/// Three lashes fanning out from the top-outer edge of each eye.
+private struct Lashes: View {
+    let isRight: Bool
+
+    var body: some View {
+        LashPath()
+            .stroke(Color.black, style: StrokeStyle(lineWidth: 1.1, lineCap: .round))
+            .frame(width: 13, height: 5)
+            .scaleEffect(x: isRight ? 1 : -1)  // mirror so lashes point outward on both eyes
+            .offset(y: -3.5)
+    }
+
+    private struct LashPath: Shape {
+        func path(in rect: CGRect) -> Path {
+            Path { p in
+                // Drawn for the right eye (outer side = right); mirrored for the left.
+                let roots = [(0.55, 0.95), (0.72, 1.0), (0.88, 1.15)]
+                let tips = [(0.62, 0.15), (0.86, 0.2), (1.08, 0.45)]
+                for (root, tip) in zip(roots, tips) {
+                    p.move(to: CGPoint(x: rect.width * root.0, y: rect.height * root.1))
+                    p.addLine(to: CGPoint(x: rect.width * tip.0, y: rect.height * tip.1))
+                }
+            }
+        }
+    }
+}
+
+/// Golden spiral horn.
+private struct UnicornHorn: View {
+    var body: some View {
+        ZStack {
+            HornShape()
+                .fill(LinearGradient(colors: [Color(red: 1.0, green: 0.95, blue: 0.70),
+                                              Color(red: 0.98, green: 0.78, blue: 0.30)],
+                                     startPoint: .top, endPoint: .bottom))
+            // Spiral grooves.
+            HornGrooves()
+                .stroke(Color(red: 0.85, green: 0.62, blue: 0.20), style: StrokeStyle(lineWidth: 0.8, lineCap: .round))
+                .clipShape(HornShape())
+            HornShape().stroke(Color(red: 0.85, green: 0.62, blue: 0.20).opacity(0.6), lineWidth: 0.5)
+        }
+    }
+
+    private struct HornShape: Shape {
+        func path(in rect: CGRect) -> Path {
+            Path { p in
+                p.move(to: CGPoint(x: rect.midX, y: rect.minY))
+                p.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.maxY),
+                               control: CGPoint(x: rect.maxX * 0.8, y: rect.midY))
+                p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+                p.addQuadCurve(to: CGPoint(x: rect.midX, y: rect.minY),
+                               control: CGPoint(x: rect.maxX * 0.2, y: rect.midY))
+                p.closeSubpath()
+            }
+        }
+    }
+
+    private struct HornGrooves: Shape {
+        func path(in rect: CGRect) -> Path {
+            Path { p in
+                for i in 1...4 {
+                    let y = rect.height * CGFloat(i) / 5
+                    p.move(to: CGPoint(x: rect.minX, y: y + 2))
+                    p.addLine(to: CGPoint(x: rect.maxX, y: y - 2))
+                }
+            }
+        }
+    }
+}
+
+/// Little four-point stars twinkling around the horn.
+private struct Sparkles: View {
+    let time: TimeInterval
+
+    private static let spots: [(x: CGFloat, y: CGFloat, size: CGFloat)] =
+        [(-15, -40, 5), (15, -46, 6), (20, -33, 4)]
+
+    var body: some View {
+        ZStack {
+            ForEach(Self.spots.indices, id: \.self) { i in
+                let spot = Self.spots[i]
+                let twinkle = 0.55 + 0.45 * abs(sin(time * 2 * .pi / 1.6 + Double(i) * 1.3))
+                Star()
+                    .fill(Color(red: 1.0, green: 0.85, blue: 0.40))
+                    .frame(width: spot.size, height: spot.size)
+                    .scaleEffect(twinkle)
+                    .opacity(twinkle)
+                    .offset(x: spot.x, y: spot.y)
+            }
+        }
+    }
+
+    private struct Star: Shape {
+        func path(in rect: CGRect) -> Path {
+            Path { p in
+                let c = CGPoint(x: rect.midX, y: rect.midY)
+                let r = rect.width / 2, inner = r * 0.28
+                for k in 0..<8 {
+                    let angle = Double(k) * .pi / 4 - .pi / 2
+                    let radius = k.isMultiple(of: 2) ? r : inner
+                    let point = CGPoint(x: c.x + radius * CGFloat(cos(angle)), y: c.y + radius * CGFloat(sin(angle)))
+                    k == 0 ? p.move(to: point) : p.addLine(to: point)
+                }
+                p.closeSubpath()
+            }
         }
     }
 }
 
 private struct Ear: View {
     let palette: HorsePalette
+    var outlined = false
 
     var body: some View {
         ZStack {
             Triangle().fill(palette.coat).frame(width: 14, height: 18)
+            if outlined {
+                Triangle().stroke(Color(red: 0.93, green: 0.70, blue: 0.84), lineWidth: 1).frame(width: 14, height: 18)
+            }
             Triangle().fill(palette.innerEar).frame(width: 7, height: 10).offset(y: 3)
         }
     }
@@ -428,6 +630,7 @@ private struct CalloutTail: Shape {
 /// galloping inside. Laid out in the 64×84 horse frame (it sits in the headroom above it).
 private struct ThoughtBubble: View {
     let time: TimeInterval
+    var hasHorn = false
 
     var body: some View {
         ZStack {
@@ -440,7 +643,7 @@ private struct ThoughtBubble: View {
             ZStack {
                 Cloud().fill(.white)
                 Cloud().stroke(Self.outline, lineWidth: 0.8)
-                GallopingHorse(time: time).frame(width: 26, height: 17).offset(y: 1)
+                GallopingHorse(time: time, hasHorn: hasHorn).frame(width: 26, height: 17).offset(y: 1)
             }
             .frame(width: 40, height: 28)
             .position(x: 60, y: -35)
@@ -470,6 +673,7 @@ private struct Cloud: Shape {
 /// Very simple running horse: bobbing body, alternating legs, streaming tail, scrolling ground.
 private struct GallopingHorse: View {
     let time: TimeInterval
+    var hasHorn = false
 
     private static let ink = Color(red: 0.36, green: 0.22, blue: 0.12)
 
@@ -507,6 +711,10 @@ private struct GallopingHorse: View {
                 // Ear.
                 Capsule().fill(Self.ink).frame(width: 1.2, height: 2.6)
                     .rotationEffect(.degrees(15)).position(x: 19.5, y: 1)
+                if hasHorn {  // Marley's little horn
+                    Capsule().fill(Color(red: 0.98, green: 0.78, blue: 0.30)).frame(width: 1.3, height: 4.5)
+                        .rotationEffect(.degrees(40)).position(x: 23.5, y: 0.2)
+                }
             }
             .offset(y: bob)
         }

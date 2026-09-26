@@ -92,7 +92,7 @@ struct BubbleView: View {
     private var header: some View {
         HStack(spacing: 6) {
             Circle().fill(PetLevel.color(content.level)).frame(width: 8, height: 8)
-            Text(PetLevel.name(content.level))
+            Text("\(model.character.displayName) · \(PetLevel.name(content.level))")
                 .font(.system(size: 11, weight: .semibold))
             Spacer()
             if !content.confidenceLabel.isEmpty {
