@@ -104,7 +104,8 @@ def test_full_mode_reads_whole_bubble(monkeypatch):
     many = full_bubble(ids=[f"c{i}" for i in range(10)])
     many.pattern_text = " ".join(["word"] * 100)
     capped = voice.line_for(0, 2, many, False)
-    assert "Plus 5 more." in capped and len(capped.split()) == voice.FULL_MAX_WORDS
+    assert "Plus 7 more." in capped and len(capped.split()) <= voice.FULL_MAX_WORDS
+    assert capped.endswith(".") and "word word" not in capped  # stops at a sentence end
 
 
 async def test_full_mode_does_not_repeat_itself(api, monkeypatch):
@@ -175,3 +176,21 @@ async def test_failed_audio_does_not_use_up_the_slot(api):
     assert await voice.maybe_speak(st, 0, 3, bubble(3), False, now=0.0) is None
     api.fail = False
     assert await voice.maybe_speak(st, 0, 3, bubble(3), False, now=1.0)
+
+
+def test_clip_sentences_keeps_whole_sentences():
+    text = "One two three. Four five six seven. Eight nine."
+    assert voice.clip_sentences(text, 7) == "One two three. Four five six seven."
+    assert voice.clip_sentences(text, 2) == "One two…"  # first sentence alone too long
+
+
+async def test_long_llm_summary_is_trimmed_to_whole_sentences(api, monkeypatch):
+    from app import llm
+
+    async def chatty(*a, **k):
+        return "Whoa there, partner, that paper is made up. " + "This goes on and on. " * 10
+
+    monkeypatch.setattr(llm, "llm_available", lambda: True)
+    monkeypatch.setattr(llm, "complete_text", chatty)
+    vp = await voice.maybe_speak(voice.VoiceState(), 0, 2, full_bubble(), False, now=0.0)
+    assert len(vp.text.split()) <= voice.SUMMARY_MAX_WORDS + 8 and vp.text.endswith(".")

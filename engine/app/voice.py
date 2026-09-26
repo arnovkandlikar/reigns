@@ -3,7 +3,7 @@
 Two modes, picked with REIGNS_VOICE_MODE:
 - full (default): whenever a reply brings NEW problems (level ≥ 1), the pet talks the user
   through ALL of them. With an Anthropic key, the fast model turns the bubble into a short,
-  natural spoken summary (≤ ~50 words); without one (or if it's slow) it reads the bubble.
+  natural spoken summary (≤ ~30 words, 1-2 sentences); without one (or if it's slow) it reads the bubble.
 - short (PRD FR-V2): only when the level rises to 3 or 4, says the headline (≤ 15 words).
 Personality: REIGNS_VOICE_STYLE=cowboy (default) or plain. Pair it with a cowboy voice from
 the ElevenLabs Voice Library in REIGNS_VOICE_ID.
@@ -37,9 +37,9 @@ log = logging.getLogger("reigns.voice")
 
 MIN_GAP_S = 20.0
 MAX_WORDS = 15
-FULL_MAX_WORDS = 70
-FULL_MAX_PROBLEMS = 5
-SUMMARY_MAX_WORDS = 55
+FULL_MAX_WORDS = 40
+FULL_MAX_PROBLEMS = 3
+SUMMARY_MAX_WORDS = 30  # short but complete: ~8-10 s of speech
 SUMMARY_TIMEOUT_S = 3.5
 TTS_TIMEOUT_S = 6.0
 API_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
@@ -92,6 +92,22 @@ def _speed() -> float:
     return round(min(1.2, max(0.7, v)), 2)
 
 
+_SENTENCE = re.compile(r"(?<=[.!?…])\s+")
+
+
+def clip_sentences(text: str, n: int) -> str:
+    """Keep whole sentences while they fit in n words (so speech never stops mid-thought);
+    fall back to a word clip only if the first sentence alone is too long."""
+    out, count = [], 0
+    for sent in _SENTENCE.split(" ".join(text.split())):
+        w = len(sent.split())
+        if count + w > n:
+            break
+        out.append(sent)
+        count += w
+    return " ".join(out) if out else clip_words(text, n)
+
+
 def _stability() -> float:
     try:
         v = float(os.environ.get("REIGNS_VOICE_STABILITY") or DEFAULT_STABILITY)
@@ -133,7 +149,7 @@ def full_line(bubble: BubbleContent) -> str:
         parts.append(f"Plus {extra} more.")
     parts.append(bubble.pattern_text)
     text = " ".join(_sentence(t) for t in parts if t and t.strip())
-    return clip_words(text, FULL_MAX_WORDS)
+    return clip_sentences(text, FULL_MAX_WORDS)
 
 
 def _new_problem_ids(bubble: BubbleContent, spoken_ids: set[str]) -> set[str]:
@@ -159,7 +175,7 @@ def line_for(
     rose_to_alarm = level >= 3 and level > prev_level
     if _new_problem_ids(bubble, spoken_ids or set()) or rose_to_alarm:
         text = full_line(bubble)
-        return clip_words("Whoa there, partner. " + text, FULL_MAX_WORDS) if style() == "cowboy" else text
+        return clip_sentences("Whoa there, partner. " + text, FULL_MAX_WORDS) if style() == "cowboy" else text
     return None
 
 
@@ -176,8 +192,10 @@ _SUMMARY_SYSTEM = {
     ),
 }
 _SUMMARY_RULES = (
-    "Turn the notes below into what you'd SAY. Cover every problem briefly, then end with a "
-    "one-sentence takeaway. At most {n} words, 2-4 short sentences. Spoken English only: no "
+    "Turn the notes below into a QUICK heads-up you'd SAY out loud: at most {n} words, 1-2 "
+    "short sentences. Mention every problem, but compress: group similar ones (e.g. 'two made-up "
+    "papers and a broken link') and skip details the user can read in the bubble. If there's "
+    "room, end with a few words on what to do. Spoken English only: no "
     "lists, markdown, emojis, URLs, stage directions, or quotation marks around the whole thing. "
     "Reply with only the words to speak."
 )
@@ -197,7 +215,7 @@ def _clean_spoken(text: str) -> str:
     text = re.sub(r"[*_#`>\[\]]", "", text or "")
     text = re.sub(r"https?://\S+", "", text)
     text = " ".join(text.split()).strip().strip('"').strip()
-    return clip_words(text, SUMMARY_MAX_WORDS + 10)
+    return clip_sentences(text, SUMMARY_MAX_WORDS + 8)
 
 
 async def summarize(bubble: BubbleContent) -> Optional[str]:
