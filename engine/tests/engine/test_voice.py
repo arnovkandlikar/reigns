@@ -108,3 +108,13 @@ async def test_full_mode_does_not_repeat_itself(api, monkeypatch):
     assert await voice.maybe_speak(st, 2, 2, full_bubble(ids=("c9",)), False, now=60.0)
     assert await voice.maybe_speak(st, 2, 0, full_bubble(level=0), True, now=90.0)  # Fixed it!
     assert st.spoken_ids == set()
+
+
+async def test_speed_setting(api, monkeypatch):
+    monkeypatch.delenv("REIGNS_VOICE_SPEED", raising=False)
+    await voice.synthesize("hello there")
+    assert json.loads(api.calls[-1].content)["voice_settings"]["speed"] == voice.DEFAULT_SPEED
+    monkeypatch.setenv("REIGNS_VOICE_SPEED", "5")  # clamped to ElevenLabs' max
+    await voice.synthesize("hello there")  # new speed → new cache entry → new call
+    assert len(api.calls) == 2
+    assert json.loads(api.calls[-1].content)["voice_settings"]["speed"] == 1.2

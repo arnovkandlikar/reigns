@@ -4,6 +4,8 @@ Two modes, picked with REIGNS_VOICE_MODE:
 - full (default): whenever a reply brings NEW problems (level ≥ 1), the pet reads the whole
   bubble — headline, up to 3 problems, and the pattern — capped at ~70 words.
 - short (PRD FR-V2): only when the level rises to 3 or 4, says the headline (≤ 15 words).
+Speed: REIGNS_VOICE_SPEED (0.7–1.2, default 1.15) — ElevenLabs' own speed setting, so the
+voice stays natural (no pitch change), just less draggy.
 Both: a verified fix → "Fixed it!" (Recovered). At most one line per 20 s per session.
 
 Speed: every line is cached on disk (engine/.voice_cache/, git-ignored) and ~20 common lines
@@ -36,6 +38,7 @@ FULL_MAX_PROBLEMS = 3
 TTS_TIMEOUT_S = 6.0
 API_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 DEFAULT_MODEL = "eleven_flash_v2_5"  # ElevenLabs' low-latency model
+DEFAULT_SPEED = 1.15  # 1.0 = normal; ElevenLabs allows 0.7–1.2
 CACHE_DIR = Path(__file__).resolve().parents[1] / ".voice_cache"
 
 # Pre-generated at startup (FR-V2 "~20 common lines"): Role D's level ≥ 3 headlines + extras.
@@ -71,6 +74,14 @@ def enabled() -> bool:
 
 def _model() -> str:
     return os.environ.get("REIGNS_VOICE_MODEL") or DEFAULT_MODEL
+
+
+def _speed() -> float:
+    try:
+        v = float(os.environ.get("REIGNS_VOICE_SPEED") or DEFAULT_SPEED)
+    except ValueError:
+        v = DEFAULT_SPEED
+    return round(min(1.2, max(0.7, v)), 2)
 
 
 def clip_words(text: str, n: int = MAX_WORDS) -> str:
@@ -127,7 +138,7 @@ def line_for(
 
 
 def _cache_path(text: str) -> Path:
-    key = hashlib.sha1(f"{os.environ.get('REIGNS_VOICE_ID')}|{_model()}|{text}".encode())
+    key = hashlib.sha1(f"{os.environ.get('REIGNS_VOICE_ID')}|{_model()}|{_speed()}|{text}".encode())
     return CACHE_DIR / f"{key.hexdigest()}.mp3"
 
 
@@ -146,7 +157,8 @@ async def synthesize(text: str) -> Optional[bytes]:
                 params={"output_format": "mp3_44100_128"},
                 headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"],
                          "accept": "audio/mpeg"},
-                json={"text": text, "model_id": _model()},
+                json={"text": text, "model_id": _model(),
+                      "voice_settings": {"speed": _speed()}},
             )
     except httpx.HTTPError as exc:
         log.warning("elevenlabs request failed: %s", exc)
