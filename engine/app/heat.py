@@ -94,6 +94,15 @@ class HeatState:
         for cid in claim_ids:
             self.disagree(cid, now)
 
+    def restore(self, heat: int, now: float) -> None:
+        """Returning to a chat: show its saved heat right away (no hysteresis wait). Time spent in
+        other chats doesn't count toward decay; old claim contributions aren't known anymore."""
+        self._set(heat)
+        self.displayed_level = level_for(self.heat)
+        self._pending_level = None
+        self._decay_anchor = now if self.heat else None
+        self.contributions.clear()
+
     # --- reads ------------------------------------------------------------------------------
     def target_level(self, now: float) -> int:
         """Level implied by current heat, ignoring hysteresis (used for bubble content)."""

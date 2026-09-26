@@ -58,6 +58,11 @@ class Session:
         self._background: set[asyncio.Task] = set()
         self.voice_sink: Optional[Callable] = None  # set by the WS handler
         self.voice_state = voice.VoiceState()
+        # Per-chat heat memory: flipping back to a chat restores its panic rating.
+        self.chat_key: Optional[str] = None
+        self._restored_counts = (0, 0)  # red/amber from the chat's earlier visits
+        self._last_saved_heat: Optional[tuple] = None
+        self._heat_to_save: Optional[tuple] = None
 
     @property
     def sid(self) -> str:
@@ -68,11 +73,45 @@ class Session:
         now = self.clock()
         level = self.heat.tick(now)
         red, amber = triage.counts(self.ctx.active_verdicts())
+        red, amber = red + self._restored_counts[0], amber + self._restored_counts[1]
         self.ctx.heat, self.ctx.level = self.heat.heat, level
+        self._remember_heat(level, red, amber)
         return HeatUpdate(
             heat=self.heat.heat, level=level, recovered=self.heat.recovered(now),
             red_count=red, amber_count=amber,
         )
+
+    def _remember_heat(self, level: int, red: int, amber: int) -> None:
+        """Note this chat's latest heat; _save_heat() writes it if it changed."""
+        self._heat_to_save = (self.heat.heat, level, red, amber)
+
+    async def _save_heat(self) -> None:
+        """Persist the chat's heat (a local SQLite upsert, ~1 ms) when it changed. Awaited rather
+        than spawned so the write can't be cancelled halfway and wedge the ledger connection."""
+        key = self._heat_to_save
+        if self.chat_key is None or key is None or key == self._last_saved_heat:
+            return
+        self._last_saved_heat = key
+        await self.ledger.save_chat_heat(self.chat_key, self.sid, *key)
+
+    async def _restore_chat(self, chat_key: str) -> list[Envelope]:
+        """session.start for a chat we've seen before → put its heat (and bubble) back."""
+        self.chat_key = chat_key
+        saved = await self.ledger.load_chat(chat_key)
+        if not saved:
+            return [self._heat_env()]
+        self.heat.restore(int(saved["heat"]), self.clock())
+        self._restored_counts = (int(saved["red_count"]), int(saved["amber_count"]))
+        self._last_saved_heat = None
+        out = [self._heat_env()]
+        if saved.get("bubble") and self.heat.heat > 0:
+            try:
+                out.append(envelope("bubble.content", self.sid,
+                                    BubbleContent.model_validate_json(saved["bubble"])))
+            except ValueError as exc:
+                log.warning("saved bubble unreadable for chat %s: %s", chat_key, exc)
+        log.info("restored chat heat", extra={"session_id": self.sid, "heat": self.heat.heat})
+        return out
 
     def heat_envelope_if_changed(self) -> Optional[Envelope]:
         """Used by the WS ticker: emits heat.update only when something visible changed."""
@@ -80,6 +119,7 @@ class Session:
         key = (hu.heat, hu.level, hu.recovered)
         if key == self.last_heat_sent:
             return None
+        self._spawn(self._save_heat())  # ticker path (decay): runs on the WebSocket's own loop
         self.last_heat_sent = key
         return envelope("heat.update", self.sid, hu)
 
@@ -98,14 +138,20 @@ class Session:
     async def handle(self, env: Envelope, payload) -> list[Envelope]:
         if isinstance(payload, SessionStart):
             self.ctx.app = payload.app
+            if payload.chat_key:
+                return await self._restore_chat(payload.chat_key)
             return [self._heat_env()]
         if isinstance(payload, MessageNew):
             async with self.lock:
                 return await self.on_message(payload)
         if isinstance(payload, CorrectionInserted):
-            return await self.on_correction_inserted(payload)
+            out = await self.on_correction_inserted(payload)
+            await self._save_heat()
+            return out
         if isinstance(payload, FeedbackDisagree):
-            return await self.on_disagree(payload)
+            out = await self.on_disagree(payload)
+            await self._save_heat()
+            return out
         return []
 
     # ------------------------------------------------------------------ message.new
@@ -113,7 +159,9 @@ class Session:
         if self.ctx.message(msg.message_id):
             return []  # companion re-sent a message we already processed
         self.ctx.messages.append(ChatMessage(**msg.model_dump()))
-        await self.ledger.message(self.sid, msg)
+        if self.chat_key is None and msg.position == 0:
+            self.chat_key = msg.message_id  # a brand-new chat: its first message names it
+        await self.ledger.message(self.sid, msg, heat=self.heat.heat)
         if msg.role == "user":
             self._on_user(msg)
             return []
@@ -243,6 +291,10 @@ class Session:
             self._heat_env(),
             envelope("bubble.content", self.sid, bubble),
         ]
+        await self.ledger.message_heat(self.sid, msg.message_id, self.heat.heat)
+        if self.chat_key:
+            await self.ledger.save_chat_bubble(self.chat_key, bubble.model_dump_json())
+        await self._save_heat()
         self._spawn(store.record_verdicts(self.ctx, claims, verdicts))
         self._spawn(memory.on_verdicts(self.ctx, claims, verdicts))
         self._spawn(self._maybe_voice(prev_level, level, bubble))
