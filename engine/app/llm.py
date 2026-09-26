@@ -18,6 +18,7 @@ from typing import Any
 log = logging.getLogger("reigns.llm")
 
 DEFAULT_MODEL = "claude-sonnet-5"
+DEFAULT_FAST_MODEL = "claude-haiku-4-5"
 _client = None
 
 
@@ -33,6 +34,12 @@ def model_name() -> str:
     return os.environ.get("REIGNS_MODEL") or DEFAULT_MODEL
 
 
+def fast_model_name() -> str:
+    """Smaller, faster model for simple high-volume steps like claim extraction (FR-B3, G1
+    latency). Falls back to the main model if REIGNS_FAST_MODEL is set to an empty string."""
+    return os.environ.get("REIGNS_FAST_MODEL", DEFAULT_FAST_MODEL) or model_name()
+
+
 def _get_client():
     global _client
     if _client is None:
@@ -45,11 +52,15 @@ def _get_client():
 
 
 async def complete_text(
-    system: str, user: str, temperature: float = 0.0, max_tokens: int = 1024
+    system: str,
+    user: str,
+    temperature: float = 0.0,
+    max_tokens: int = 1024,
+    model: str | None = None,
 ) -> str:
     try:
         resp = await _get_client().messages.create(
-            model=model_name(),
+            model=model or model_name(),
             max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": user}],
@@ -77,12 +88,16 @@ def parse_json(text: str) -> Any:
 
 
 async def complete_json(
-    system: str, user: str, temperature: float = 0.0, max_tokens: int = 2048
+    system: str,
+    user: str,
+    temperature: float = 0.0,
+    max_tokens: int = 2048,
+    model: str | None = None,
 ) -> Any:
     system = system.rstrip() + "\n\nRespond with JSON only. No prose, no code fences."
     last_err: Exception | None = None
     for attempt in range(2):  # retry once on parse failure
-        text = await complete_text(system, user, temperature, max_tokens)
+        text = await complete_text(system, user, temperature, max_tokens, model)
         try:
             return parse_json(text)
         except (json.JSONDecodeError, ValueError) as exc:
