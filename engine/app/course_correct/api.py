@@ -420,6 +420,29 @@ def _pattern(causes: list[RootCause]) -> tuple[str, str]:
     return pattern, redo
 
 
+def _is_reigns_prompt(text: str, session: SessionContext) -> bool:
+    """Exclude pasted Fix it text from the user's original task question."""
+    normalized = " ".join(text.split()).casefold()
+    for correction in session.corrections:
+        if not correction.inserted:
+            continue
+        prompt = " ".join(correction.text.split()).casefold()
+        if prompt and (normalized == prompt or (len(prompt) >= 80 and prompt in normalized)):
+            return True
+    return (
+        normalized.startswith("start a fresh chat with this handoff:")
+        or (
+            "what's wrong and the evidence:" in normalized
+            and "pattern:" in normalized
+            and "[verified] or [unverified]" in normalized
+        )
+        or (
+            "the pattern appears to be" in normalized
+            and "mark factual claims [verified] or [unverified]" in normalized
+        )
+    )
+
+
 def _correction_text(
     level: int,
     profile: DriftProfile,
@@ -493,10 +516,13 @@ def _correction_text(
         )
 
     user_questions = [m.text.strip() for m in sorted(session.messages, key=lambda m: m.position)
-                      if m.role == "user" and m.text.strip()]
+                      if m.role == "user" and m.text.strip()
+                      and not _is_reigns_prompt(m.text, session)]
     original_question = next((text for text in reversed(user_questions) if "?" in text),
                              user_questions[-1] if user_questions else "") or next(
-        (claim.context for claim in source_claims if claim.context), "Original question unavailable"
+        (claim.context for claim in source_claims
+         if claim.context and not _is_reigns_prompt(claim.context, session)),
+        "Original question unavailable",
     )
     confirmed = [
         _clean_claim(verdict, session.claims.get(verdict.claim_id))
