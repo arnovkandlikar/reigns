@@ -64,6 +64,25 @@ UNRELATED_S2 = {
 }
 
 
+VASWANI_OA = {
+    "id": "https://openalex.org/W2963403868",
+    "display_name": "Attention Is All You Need",
+    "publication_year": 2017,
+    "doi": None,
+    "authorships": [
+        {"author": {"display_name": "Ashish Vaswani"}},
+        {"author": {"display_name": "Noam Shazeer"}},
+    ],
+}
+UNRELATED_OA = {
+    "id": "https://openalex.org/W1",
+    "display_name": "Machine learning approaches to honey bee health monitoring",
+    "publication_year": 2021,
+    "doi": "https://doi.org/10.1000/oa1",
+    "authorships": [{"author": {"display_name": "B. Author"}}],
+}
+
+
 def api_handler(request: httpx.Request) -> httpx.Response:
     """Pretend to be Crossref, Semantic Scholar, PyPI, npm and a couple of websites."""
     host, path = request.url.host, request.url.path
@@ -71,6 +90,10 @@ def api_handler(request: httpx.Request) -> httpx.Response:
         q = request.url.params.get("query.bibliographic", "").lower()
         items = [VASWANI_CR] if "attention is all you need" in q else UNRELATED_CR
         return httpx.Response(200, json={"status": "ok", "message": {"items": items}})
+    if host == "api.openalex.org":
+        q = (request.url.params.get("search", "") + request.url.params.get("filter", "")).lower()
+        works = [VASWANI_OA] if "attention is all you need" in q else [UNRELATED_OA]
+        return httpx.Response(200, json={"results": works})
     if host == "api.semanticscholar.org":
         q = request.url.params.get("query", "").lower()
         data = [VASWANI_S2] if "attention is all you need" in q else [UNRELATED_S2]
@@ -180,7 +203,7 @@ async def test_fake_paper_evidence_names_both_sources(auditor, session):
     )
     r = await auditor.check(c, session)
     assert r.status == "contradicted" and r.confidence >= 0.9
-    assert {e.source for e in r.evidence} == {"Crossref", "Semantic Scholar"}
+    assert {e.source for e in r.evidence} == {"Crossref", "Semantic Scholar", "OpenAlex"}
 
 
 async def test_real_title_wrong_authors_is_only_unverified(auditor, session):
@@ -191,10 +214,67 @@ async def test_real_title_wrong_authors_is_only_unverified(auditor, session):
 
 
 async def test_real_title_wrong_year(auditor, session):
+    """Citing a year AFTER the paper appeared (2021 for a 2017 paper) → mis-citation, amber."""
     r = await auditor.check(
-        claim("paper", 'Vaswani et al. (2012), "Attention Is All You Need"'), session
+        claim("paper", 'Vaswani et al. (2021), "Attention Is All You Need"'), session
     )
     assert r.status == "unverified" and "year" in r.explanation
+
+
+async def test_famous_paper_buried_by_relevance_is_found_by_citations(session):
+    """Live run 3: OpenAlex relevance top-5 had only 'Attention is all you need in <X>'
+    follow-ups; Crossref only a 2025 re-registration; S2 rate-limited → was amber."""
+    follow_up = {
+        "id": "W9",
+        "display_name": "Attention Is All You Need in Speech Separation",
+        "publication_year": 2021,
+        "doi": None,
+        "authorships": [{"author": {"display_name": "Cem Subakan"}}],
+    }
+    rereg = {**VASWANI_CR, "issued": {"date-parts": [[2025, 1, 1]]}}
+
+    def handler(req):
+        host = req.url.host
+        if host == "api.crossref.org":
+            return httpx.Response(200, json={"message": {"items": [rereg]}})
+        if host == "api.openalex.org":
+            by_citations = req.url.params.get("sort") == "cited_by_count:desc"
+            return httpx.Response(
+                200, json={"results": [VASWANI_OA if by_citations else follow_up]}
+            )
+        return httpx.Response(429)
+
+    import app.detectors.reference_auditor as ra
+
+    async def no_sleep(s): ...
+
+    real_sleep, ra.asyncio.sleep = ra.asyncio.sleep, no_sleep
+    try:
+        r = await ReferenceAuditor(transport=httpx.MockTransport(handler)).check(
+            claim("paper", 'Vaswani et al. (2017), "Attention Is All You Need"'), session
+        )
+    finally:
+        ra.asyncio.sleep = real_sleep
+    assert r.status == "supported" and r.confidence >= 0.95
+    assert r.evidence[0].source == "OpenAlex"
+
+
+async def test_rereg_only_with_two_sources_answering_is_supported(session):
+    """Even if OpenAlex answers with nothing useful, a title+author match whose records are all
+    later than the citation is the real paper."""
+    rereg = {**VASWANI_CR, "issued": {"date-parts": [[2025, 1, 1]]}}
+
+    def handler(req):
+        if req.url.host == "api.crossref.org":
+            return httpx.Response(200, json={"message": {"items": [rereg]}})
+        if req.url.host == "api.openalex.org":
+            return httpx.Response(200, json={"results": [UNRELATED_OA]})
+        return httpx.Response(503)
+
+    r = await ReferenceAuditor(transport=httpx.MockTransport(handler)).check(
+        claim("paper", 'Vaswani et al. (2017), "Attention Is All You Need"'), session
+    )
+    assert r.status == "supported" and "2025" in r.explanation
 
 
 async def test_both_apis_down_is_error_not_contradicted(session):
@@ -216,7 +296,7 @@ async def test_one_api_down_still_decides(session):
         ),
         session,
     )
-    assert r.status == "contradicted" and r.confidence < 0.95  # one source → a bit less sure
+    assert r.status == "contradicted" and r.confidence < 0.95  # fewer sources → less sure
 
 
 async def test_lookups_are_cached(session):
@@ -230,7 +310,7 @@ async def test_lookups_are_cached(session):
     c = claim("paper", 'Vaswani et al. (2017), "Attention Is All You Need"')
     await a.check(c, session)
     await a.check(c, session)
-    assert len(calls) == 2  # one Crossref + one S2, second check served from session.cache
+    assert len(calls) == 4  # Crossref + S2 + 2× OpenAlex once; 2nd check served from cache
 
 
 # --------------------------------------------------------------------------- URLs
@@ -430,7 +510,7 @@ async def test_calls_to_each_api_are_serialized(load_scenario, session):
     """4 papers checked in parallel (like the engine does) → never 2 Crossref calls at once."""
     import asyncio
 
-    in_flight = {"api.crossref.org": 0, "api.semanticscholar.org": 0}
+    in_flight = {"api.crossref.org": 0, "api.semanticscholar.org": 0, "api.openalex.org": 0}
     peak = dict(in_flight)
 
     class SlowTransport(httpx.AsyncBaseTransport):
@@ -447,7 +527,7 @@ async def test_calls_to_each_api_are_serialized(load_scenario, session):
     results = await asyncio.gather(
         *(a.check(c, SessionContext(session_id=str(i))) for i, c in enumerate(claims))
     )
-    assert peak == {"api.crossref.org": 1, "api.semanticscholar.org": 1}
+    assert peak == {"api.crossref.org": 1, "api.semanticscholar.org": 1, "api.openalex.org": 1}
     assert [r.status for r in results].count("contradicted") == 3
     assert [r.status for r in results].count("supported") == 1  # → 3 red + 1 green
 
@@ -468,3 +548,48 @@ async def test_crossref_mailto_is_sent(session, monkeypatch):
     )
     assert seen["param"] == "team@reigns.dev"
     assert "mailto:team@reigns.dev" in seen["ua"]
+
+
+# --------------------------------------------------------------------------- live run 2
+async def test_later_record_year_with_matching_authors_is_supported(session):
+    """Live: S2 rate-limited, Crossref's only record was a 2025 re-registration of the 2017
+    paper, OpenAlex also down → used to be amber. Same title + authors, later record → green."""
+    rereg = {**VASWANI_CR, "issued": {"date-parts": [[2025, 1, 1]]}}
+
+    def handler(req):
+        if req.url.host == "api.crossref.org":
+            return httpx.Response(200, json={"message": {"items": [rereg]}})
+        return httpx.Response(429)
+
+    import app.detectors.reference_auditor as ra
+
+    async def no_sleep(s): ...
+
+    ra_sleep, ra.asyncio.sleep = ra.asyncio.sleep, no_sleep
+    try:
+        r = await ReferenceAuditor(transport=httpx.MockTransport(handler)).check(
+            claim("paper", 'Vaswani et al. (2017), "Attention Is All You Need"'), session
+        )
+    finally:
+        ra.asyncio.sleep = ra_sleep
+    assert r.status == "supported" and "2025" in r.explanation
+
+
+async def test_citing_a_later_year_than_the_paper_is_still_flagged(session):
+    """The leniency is one-way: citing 2030 for a 2017 paper is still a mis-citation."""
+    r = await ReferenceAuditor(transport=httpx.MockTransport(api_handler)).check(
+        claim("paper", 'Vaswani et al. (2030), "Attention Is All You Need"'), session
+    )
+    assert r.status == "unverified"
+
+
+async def test_openalex_alone_can_confirm_a_paper(session):
+    def handler(req):
+        if req.url.host == "api.openalex.org":
+            return api_handler(req)
+        return httpx.Response(503)
+
+    r = await ReferenceAuditor(transport=httpx.MockTransport(handler)).check(
+        claim("paper", 'Vaswani et al. (2017), "Attention Is All You Need"'), session
+    )
+    assert r.status == "supported" and r.evidence[0].source == "OpenAlex"

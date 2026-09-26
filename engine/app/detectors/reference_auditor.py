@@ -5,7 +5,7 @@ moment (§11 step 1), so precision matters most here: we only say `contradicted`
 lookup succeeded and found nothing close.
 
 Claim types handled (routed here by app/triage.py):
-  paper   → Crossref + Semantic Scholar title search, in parallel
+  paper   → Crossref + Semantic Scholar + OpenAlex title search, in parallel
   url     → HTTP GET; 404/410 or DNS failure → contradicted
   package → PyPI JSON API (or the npm registry for JavaScript packages)
 
@@ -50,6 +50,9 @@ TITLE_MATCH = 0.85  # FR-C1: normalized title similarity for "same paper"
 TITLE_PARTIAL = 0.75
 WORDS_PARTIAL = 0.50
 YEAR_TOLERANCE = 1  # FR-C1: year ±1 (preprint vs. journal year)
+# Title + authors match but the record is LATER than the cited year (re-registrations, later
+# editions, journal versions of old preprints) → still the real paper, slightly less sure.
+MAX_LATER_RECORD_YEARS = 10
 SEARCH_ROWS = 5  # FR-C1: rows=5
 
 # Rate limits: Crossref and Semantic Scholar both return 429 when one reply cites several
@@ -60,6 +63,10 @@ MAX_RETRY_WAIT_S = 2.0
 
 CROSSREF_URL = "https://api.crossref.org/works"
 S2_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+# OpenAlex: free, no key, generous rate limits, indexes arXiv/NeurIPS with original years.
+# Added after a live run where S2 rate-limited us and Crossref's only "Attention Is All You
+# Need" record was a 2025 re-registration, so a real 2017 paper came back amber.
+OPENALEX_URL = "https://api.openalex.org/works"
 PYPI_URL = "https://pypi.org/pypi/{name}/json"
 NPM_URL = "https://registry.npmjs.org/{name}"
 
@@ -235,6 +242,31 @@ def _s2_candidates(data: dict[str, Any]) -> list[Candidate]:
     return out
 
 
+def _join_or(names: list[str]) -> str:
+    """["A"] → "A";  ["A", "B"] → "A or B";  ["A", "B", "C"] → "A, B or C"."""
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
+
+
+def _openalex_candidates(data: dict[str, Any]) -> list[Candidate]:
+    out = []
+    for w in data.get("results") or []:
+        if not w.get("display_name"):
+            continue
+        names = [
+            (a.get("author") or {}).get("display_name", "") for a in w.get("authorships") or []
+        ]
+        out.append(
+            Candidate(
+                source="OpenAlex",
+                title=w["display_name"],
+                surnames=[n.split()[-1] for n in names if n and n.split()],
+                year=w.get("publication_year"),
+                url=w.get("doi") or w.get("id"),
+            )
+        )
+    return out
+
+
 # One Semaphore(1) per (event loop, API). Keyed by loop because an asyncio primitive can only
 # be used on the loop it was first used on, and tests start a new loop per test.
 _LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
@@ -295,21 +327,20 @@ class ReferenceAuditor(BaseDetector):
         if len(normalize_text(ref.title)) < 6:
             return self.result("unverified", 0.3, "Couldn't tell which paper this refers to.")
 
-        # Both searches at once; each is cached per title so a paper cited twice is looked up
-        # once. return_exceptions=True: one API failing must not sink the other.
+        # All three searches at once; each is cached per title so a paper cited twice is looked
+        # up once. return_exceptions=True: one API failing must not sink the others.
         key = normalize_text(f"{ref.title} {' '.join(ref.surnames)}")
-        crossref, s2 = await asyncio.gather(
-            self.cached(session, f"crossref:{key}", lambda: self._search_crossref(ref)),
-            self.cached(session, f"s2:{key}", lambda: self._search_s2(ref)),
-            return_exceptions=True,
-        )
-        answered: dict[str, list[Candidate]] = {}
-        if not isinstance(crossref, BaseException):
-            answered["Crossref"] = crossref
-        if not isinstance(s2, BaseException):
-            answered["Semantic Scholar"] = s2
+        searches = {
+            "Crossref": self.cached(session, f"crossref:{key}", lambda: self._search_crossref(ref)),
+            "Semantic Scholar": self.cached(session, f"s2:{key}", lambda: self._search_s2(ref)),
+            "OpenAlex": self.cached(session, f"openalex:{key}", lambda: self._search_openalex(ref)),
+        }
+        results = await asyncio.gather(*searches.values(), return_exceptions=True)
+        answered: dict[str, list[Candidate]] = {
+            name: res for name, res in zip(searches, results) if not isinstance(res, BaseException)
+        }
         if not answered:
-            raise RuntimeError(f"Crossref and Semantic Scholar both unavailable ({crossref!r})")
+            raise ConnectionError(f"all paper databases unavailable ({results[0]!r})")
 
         candidates = [c for cands in answered.values() for c in cands]
         scored = sorted(
@@ -329,6 +360,29 @@ class ReferenceAuditor(BaseDetector):
                     + (" and year." if ref.year else "."),
                     [Evidence(source=c.source, url=c.url, snippet=snippet(self._cite(c)))],
                 )
+
+        # 1b) Title + authors match, but EVERY matching record is dated later than the cited
+        #     year (re-registrations, later editions, journal versions of preprints — live run:
+        #     Crossref lists the 2017 "Attention Is All You Need" as 2025) → still the real
+        #     paper. One-way: citing a year after the paper appeared stays amber.
+        matching = [
+            c
+            for score, c in scored
+            if score >= TITLE_MATCH and ref.surnames and self._authors_ok(ref, c) and c.year
+        ]
+        if (
+            matching
+            and ref.year is not None
+            and all(0 < c.year - ref.year <= MAX_LATER_RECORD_YEARS for c in matching)
+        ):
+            c = min(matching, key=lambda m: m.year)
+            return self.result(
+                "supported",
+                0.85,
+                f"Found in {c.source} with matching title and authors (records are dated "
+                f"{c.year} or later, likely a later edition of the {ref.year} paper).",
+                [Evidence(source=c.source, url=c.url, snippet=snippet(self._cite(c)))],
+            )
 
         best_score, best = scored[0] if scored else (0.0, None)
         best_words = word_overlap(ref.title, best.title) if best is not None else 0.0
@@ -358,12 +412,13 @@ class ReferenceAuditor(BaseDetector):
 
         # 4) Every source that answered found nothing close → no such paper.
         evidence = [self._not_found_evidence(src, ref, cands) for src, cands in answered.items()]
-        both = len(answered) == 2
+        # More independent databases agreeing "no such paper" → more confident.
+        confidence = {1: 0.85, 2: 0.92}.get(len(answered), 0.95)
         return self.result(
             "contradicted",
-            0.95 if both else 0.85,
+            confidence,
             f'No paper titled "{snippet(ref.title, 120)}" exists in '
-            + (" or ".join(answered))
+            + _join_or(list(answered))
             + ".",
             evidence,
         )
@@ -392,6 +447,9 @@ class ReferenceAuditor(BaseDetector):
         if source == "Crossref":
             url = f"{CROSSREF_URL}?{urlencode({'query.bibliographic': ref.title})}"
             text = "No matching work found" + (f" (best title match {best:.2f})" if cands else "")
+        elif source == "OpenAlex":
+            url = f"{OPENALEX_URL}?{urlencode({'search': ref.title})}"
+            text = f"No matching work (best title match {best:.2f})"
         else:
             url = None
             text = f"No paper with a similar title (best match {best:.2f})"
@@ -422,6 +480,32 @@ class ReferenceAuditor(BaseDetector):
         }
         resp = await self._api_get("s2", S2_URL, params=params, headers=headers)
         return _s2_candidates(resp.json())
+
+    async def _search_openalex(self, ref: PaperRef) -> list[Candidate]:
+        """Two queries, merged:
+
+        1. relevance search (finds niche papers by their exact words)
+        2. title-only search sorted by citation count (finds famous papers). Live run: for
+           "Attention Is All You Need" the top-5 by relevance were all "Attention is all you
+           need in <X>" follow-ups, so the real 100k-citation paper never showed up.
+        """
+        base: dict[str, Any] = {
+            "per-page": SEARCH_ROWS,
+            "select": "id,display_name,publication_year,authorships,doi",
+        }
+        mailto = os.environ.get("CROSSREF_MAILTO")  # OpenAlex has the same "polite pool" idea
+        if mailto:
+            base["mailto"] = mailto
+        title_filter = re.sub(r"[,:|]", " ", ref.title)  # these characters break filter syntax
+        queries = [
+            {**base, "search": ref.title},
+            {**base, "filter": f"title.search:{title_filter}", "sort": "cited_by_count:desc"},
+        ]
+        candidates: list[Candidate] = []
+        for params in queries:
+            resp = await self._api_get("openalex", OPENALEX_URL, params=params)
+            candidates.extend(_openalex_candidates(resp.json()))
+        return candidates
 
     async def _api_get(self, api: str, url: str, **kwargs: Any) -> httpx.Response:
         """GET with one-at-a-time access per API and a single retry on 429."""
