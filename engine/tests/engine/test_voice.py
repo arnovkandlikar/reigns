@@ -328,3 +328,22 @@ def test_unicorn_falls_back_to_the_horse_voice_id(monkeypatch):
     assert voice.voice_id("unicorn") == "horse1"
     assert voice.persona("Marley") == "unicorn" and voice.persona("charlie") == voice.style()
     assert voice.persona(None) == voice.style()
+
+
+async def test_spanish_never_reads_the_english_bubble(api, monkeypatch):
+    from app import llm
+
+    async def down(*a, **k):
+        raise llm.LLMError("down")
+
+    monkeypatch.setenv("REIGNS_VOICE_STYLE", "cowboy")
+    monkeypatch.setattr(llm, "llm_available", lambda: True)
+    monkeypatch.setattr(llm, "complete_text", down)
+    for character, openers in (("charlie", voice.OPENERS_ES["cowboy"]),
+                               ("marley", voice.OPENERS_ES["unicorn"])):
+        vp = await voice.maybe_speak(voice.VoiceState(), 0, 2, full_bubble(), False, now=0.0,
+                                     lang="es", character=character)
+        assert "Encontré 2 problemas" in vp.text and "Problem" not in vp.text
+        assert any(vp.text.startswith(o) for o in openers)
+    monkeypatch.setenv("REIGNS_VOICE_MODE", "short")
+    assert voice.line_for(0, 3, full_bubble(level=3), False, lang="es").startswith("Encontré")

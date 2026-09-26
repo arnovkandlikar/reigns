@@ -31,6 +31,7 @@ from app.models import (
     MessageNew,
     SessionContext,
     SessionStart,
+    SessionUpdate,
     SourceDoc,
     VerdictsUpdate,
 )
@@ -143,6 +144,9 @@ class Session:
             if payload.chat_key:
                 return await self._restore_chat(payload.chat_key)
             return [self._heat_env()]
+        if isinstance(payload, SessionUpdate):
+            async with self.lock:  # never switch language halfway through judging a reply
+                return await self.on_session_update(payload)
         if isinstance(payload, MessageNew):
             async with self.lock:
                 return await self.on_message(payload)
@@ -155,6 +159,22 @@ class Session:
             await self._save_heat()
             return out
         return []
+
+    async def on_session_update(self, p: SessionUpdate) -> list[Envelope]:
+        """Language / pet switched mid-chat: same session, so the score, history and spoken
+        problems all carry over. The current bubble is rebuilt so it can follow the language."""
+        if p.language is not None:
+            self.ctx.language = voice.language(p.language)
+        if p.character is not None:
+            self.ctx.character = (p.character or "charlie").strip().lower()
+        log.info("session updated", extra={"session_id": self.sid, "language": self.ctx.language,
+                                           "character": self.ctx.character})
+        out = [self._heat_env()]
+        if self.heat.heat > 0 and self.ctx.verdicts:
+            bubble = await plugins.build_bubble(self.heat.target_level(self.clock()), self.ctx)
+            await self._record_correction(bubble)
+            out.append(envelope("bubble.content", self.sid, bubble))
+        return out
 
     # ------------------------------------------------------------------ message.new
     async def on_message(self, msg: MessageNew) -> list[Envelope]:
