@@ -104,7 +104,7 @@ def test_full_mode_reads_whole_bubble(monkeypatch):
     many = full_bubble(ids=[f"c{i}" for i in range(10)])
     many.pattern_text = " ".join(["word"] * 100)
     capped = voice.line_for(0, 2, many, False)
-    assert "Plus 7 more." in capped and len(capped.split()) <= voice.FULL_MAX_WORDS
+    assert len(capped.split()) <= voice.FULL_MAX_WORDS
     assert capped.endswith(".") and "word word" not in capped  # stops at a sentence end
 
 
@@ -193,4 +193,22 @@ async def test_long_llm_summary_is_trimmed_to_whole_sentences(api, monkeypatch):
     monkeypatch.setattr(llm, "llm_available", lambda: True)
     monkeypatch.setattr(llm, "complete_text", chatty)
     vp = await voice.maybe_speak(voice.VoiceState(), 0, 2, full_bubble(), False, now=0.0)
-    assert len(vp.text.split()) <= voice.SUMMARY_MAX_WORDS + 8 and vp.text.endswith(".")
+    assert len(vp.text.split()) <= voice.SUMMARY_HARD_CAP and vp.text.endswith(".")
+
+
+def test_summary_input_gives_evidence_source_and_next_step():
+    b = BubbleContent(
+        level=2, headline="A date is wrong",
+        problems=[BubbleProblem(claim_id="c1", text="The tower was finished in 1889, not 1899",
+                                evidence_url="https://en.wikipedia.org/wiki/Eiffel_Tower")],
+        action_text="Want Claude to double-check?",
+    )
+    notes = voice._summary_input(b)
+    assert "(evidence: en.wikipedia.org)" in notes and "Suggested next step:" in notes
+    assert "IN YOUR OWN WORDS" in voice._SUMMARY_RULES
+
+
+def test_bubble_fallback_mentions_extra_problems_without_cutting_off():
+    many = full_bubble(ids=[f"c{i}" for i in range(6)])
+    line = voice.full_line(many)
+    assert line.endswith("There's a bit more in the bubble.")

@@ -3,7 +3,7 @@
 Two modes, picked with REIGNS_VOICE_MODE:
 - full (default): whenever a reply brings NEW problems (level ≥ 1), the pet talks the user
   through ALL of them. With an Anthropic key, the fast model turns the bubble into a short,
-  natural spoken summary (≤ ~30 words, 1-2 sentences); without one (or if it's slow) it reads the bubble.
+  natural spoken explanation (~50 words, 2-3 sentences); without one (or if it's slow) it reads the bubble.
 - short (PRD FR-V2): only when the level rises to 3 or 4, says the headline (≤ 15 words).
 Personality: REIGNS_VOICE_STYLE=cowboy (default) or plain. Pair it with a cowboy voice from
 the ElevenLabs Voice Library in REIGNS_VOICE_ID.
@@ -27,6 +27,7 @@ import os
 import re
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Optional
 
 import httpx
@@ -37,10 +38,11 @@ log = logging.getLogger("reigns.voice")
 
 MIN_GAP_S = 20.0
 MAX_WORDS = 15
-FULL_MAX_WORDS = 40
+FULL_MAX_WORDS = 55
 FULL_MAX_PROBLEMS = 3
-SUMMARY_MAX_WORDS = 30  # short but complete: ~8-10 s of speech
-SUMMARY_TIMEOUT_S = 3.5
+SUMMARY_MAX_WORDS = 50  # explains, doesn't lecture: ~12-15 s of speech
+SUMMARY_HARD_CAP = 75  # safety net only; the prompt keeps it well under this
+SUMMARY_TIMEOUT_S = 8.0  # voice is fire-and-forget, so waiting a bit longer never delays a verdict
 TTS_TIMEOUT_S = 6.0
 API_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 DEFAULT_MODEL = "eleven_flash_v2_5"  # ElevenLabs' low-latency model
@@ -145,9 +147,9 @@ def full_line(bubble: BubbleContent) -> str:
     parts = [bubble.headline]
     parts += [p.text for p in bubble.problems[:FULL_MAX_PROBLEMS]]
     extra = len(bubble.problems) - FULL_MAX_PROBLEMS
-    if extra > 0:
-        parts.append(f"Plus {extra} more.")
     parts.append(bubble.pattern_text)
+    if extra > 0:
+        parts.append("There's a bit more in the bubble.")
     text = " ".join(_sentence(t) for t in parts if t and t.strip())
     return clip_sentences(text, FULL_MAX_WORDS)
 
@@ -192,20 +194,25 @@ _SUMMARY_SYSTEM = {
     ),
 }
 _SUMMARY_RULES = (
-    "Turn the notes below into a QUICK heads-up you'd SAY out loud: at most {n} words, 1-2 "
-    "short sentences. Mention every problem, but compress: group similar ones (e.g. 'two made-up "
-    "papers and a broken link') and skip details the user can read in the bubble. If there's "
-    "room, end with a few words on what to do. Spoken English only: no "
-    "lists, markdown, emojis, URLs, stage directions, or quotation marks around the whole thing. "
-    "Reply with only the words to speak."
+    "Explain the notes below out loud IN YOUR OWN WORDS; don't read them back. 2-3 sentences, "
+    "about {n} words at most. Cover: what Claude got wrong (every problem, similar ones grouped, "
+    "e.g. 'two made-up papers and a broken link'); briefly why it's wrong or what the real answer "
+    "is, using the evidence source if given (e.g. 'Wikipedia says 1889'); and what the user should "
+    "do next. Elaborate a little, but don't list every detail. Always finish your last sentence. "
+    "Spoken English only: no lists, markdown, emojis, URLs, stage directions, or quotation marks "
+    "around the whole thing. Reply with only the words to speak."
 )
 
 
 def _summary_input(bubble: BubbleContent) -> str:
     lines = [f"Headline: {bubble.headline}"]
-    lines += [f"Problem: {p.text}" for p in bubble.problems]
+    for p in bubble.problems:
+        src = urlparse(p.evidence_url).netloc.removeprefix("www.") if p.evidence_url else ""
+        lines.append(f"Problem: {p.text}" + (f" (evidence: {src})" if src else ""))
     if bubble.pattern_text:
         lines.append(f"Pattern: {bubble.pattern_text}")
+    if bubble.action_text:
+        lines.append(f"Suggested next step: {bubble.action_text}")
     if bubble.confidence_label:
         lines.append(f"How sure: {bubble.confidence_label} {bubble.confidence_reason}".strip())
     return "\n".join(lines)
@@ -215,7 +222,7 @@ def _clean_spoken(text: str) -> str:
     text = re.sub(r"[*_#`>\[\]]", "", text or "")
     text = re.sub(r"https?://\S+", "", text)
     text = " ".join(text.split()).strip().strip('"').strip()
-    return clip_sentences(text, SUMMARY_MAX_WORDS + 8)
+    return clip_sentences(text, SUMMARY_HARD_CAP)
 
 
 async def summarize(bubble: BubbleContent) -> Optional[str]:
@@ -228,13 +235,13 @@ async def summarize(bubble: BubbleContent) -> Optional[str]:
             llm.complete_text(
                 _SUMMARY_SYSTEM[style()],
                 _SUMMARY_RULES.format(n=SUMMARY_MAX_WORDS) + "\n\n" + _summary_input(bubble),
-                max_tokens=200,
+                max_tokens=300,
                 model=llm.fast_model_name(),
             ),
             timeout=SUMMARY_TIMEOUT_S,
         )
     except Exception as exc:  # LLMError, timeout, anything: fall back to reading the bubble
-        log.warning("voice summary failed, reading the bubble instead: %r", exc)
+        log.warning("voice: summary failed (%r), reading the bubble instead", exc)
         return None
     text = _clean_spoken(raw)
     return text if len(text.split()) >= 4 else None
@@ -318,7 +325,10 @@ async def maybe_speak(
         return None
     prev_spoken, state.last_spoken = state.last_spoken, now  # hold the slot while we work
     if mode() == "full" and not recovered:
-        text = await summarize(bubble) or text
+        summary = await summarize(bubble)
+        log.info("voice: speaking %s (%d words)", "summary" if summary else "bubble text",
+                 len((summary or text).split()))
+        text = summary or text
     try:
         audio = await synthesize(text)
     except Exception as exc:
