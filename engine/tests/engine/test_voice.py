@@ -76,10 +76,11 @@ async def test_off_without_keys(monkeypatch):
 
 
 async def test_warm_cache_generates_common_lines(api):
+    n = len(voice.COMMON_LINES) + len(voice.PRAISE_LINES["plain"])
     await voice.warm_cache()
-    assert len(api.calls) == len(voice.COMMON_LINES)
+    assert len(api.calls) == n
     await voice.warm_cache()  # second time: all cached
-    assert len(api.calls) == len(voice.COMMON_LINES)
+    assert len(api.calls) == n
 
 
 def full_bubble(level=2, ids=("c1", "c2")):
@@ -212,3 +213,46 @@ def test_bubble_fallback_mentions_extra_problems_without_cutting_off():
     many = full_bubble(ids=[f"c{i}" for i in range(6)])
     line = voice.full_line(many)
     assert line.endswith("There's a bit more in the bubble.")
+
+
+def test_openers_and_praise_never_repeat_back_to_back(monkeypatch):
+    from collections import deque
+
+    monkeypatch.setenv("REIGNS_VOICE_STYLE", "cowboy")
+    recent = deque(maxlen=4)
+    openers = [voice.pick_opener(recent) for _ in range(30)]
+    assert all(a != b for a, b in zip(openers, openers[1:]))
+    assert len(set(openers)) > 5
+    praise_recent = deque(maxlen=4)
+    praise = [voice.pick_praise(praise_recent) for _ in range(30)]
+    assert all(a != b for a, b in zip(praise, praise[1:]))
+
+
+async def test_summary_is_asked_to_start_with_the_chosen_opener(api, monkeypatch):
+    from app import llm
+
+    seen = {}
+
+    async def fake(system, user, **kw):
+        seen["user"] = user
+        return "Hold your horses. Claude made up a paper and a link, so double-check before using them."
+
+    monkeypatch.setenv("REIGNS_VOICE_STYLE", "cowboy")
+    monkeypatch.setattr(llm, "llm_available", lambda: True)
+    monkeypatch.setattr(llm, "complete_text", fake)
+    st = voice.VoiceState()
+    await voice.maybe_speak(st, 0, 2, full_bubble(), False, now=0.0)
+    assert f'Start with exactly these words: "{st.recent_openers[-1]}"' in seen["user"]
+    assert "howdy" in voice._SUMMARY_SYSTEM["cowboy"].lower()  # told NOT to say it
+
+
+async def test_clean_reply_gets_praise_but_not_too_often(api, monkeypatch):
+    st = voice.VoiceState()
+    calm = BubbleContent(level=0, headline="All clear")
+    vp = await voice.maybe_speak(st, 0, 0, calm, False, now=100.0, clean=True)
+    assert vp and vp.text in voice.PRAISE_LINES["plain"]
+    assert await voice.maybe_speak(st, 0, 0, calm, False, now=125.0, clean=True) is None  # < 45 s
+    assert await voice.maybe_speak(st, 0, 0, calm, False, now=150.0, clean=True)
+    assert await voice.maybe_speak(voice.VoiceState(), 0, 0, calm, False, now=0.0) is None  # not checked
+    monkeypatch.setenv("REIGNS_VOICE_PRAISE", "0")
+    assert await voice.maybe_speak(voice.VoiceState(), 0, 0, calm, False, now=0.0, clean=True) is None

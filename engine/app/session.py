@@ -297,7 +297,9 @@ class Session:
         await self._save_heat()
         self._spawn(store.record_verdicts(self.ctx, claims, verdicts))
         self._spawn(memory.on_verdicts(self.ctx, claims, verdicts))
-        self._spawn(self._maybe_voice(prev_level, level, bubble))
+        clean = any(v.final == "green" for v in verdicts) and not any(
+            v.final in ("red", "amber") for v in verdicts)
+        self._spawn(self._maybe_voice(prev_level, level, bubble, clean))
         log.info("processed reply", extra={"session_id": self.sid, "message_id": msg.message_id,
                  "claims": len(claims), "extract_ms": int((t_extract - t0) * 1000),
                  "detect_ms": int((t_detect - t_extract) * 1000),
@@ -343,9 +345,12 @@ class Session:
         self.ctx.corrections.append(rec)
         await self.ledger.correction(self.sid, rec)
 
-    async def _maybe_voice(self, prev_level: int, level: int, bubble: BubbleContent) -> None:
+    async def _maybe_voice(
+        self, prev_level: int, level: int, bubble: BubbleContent, clean: bool = False
+    ) -> None:
         vp = await voice.maybe_speak(
-            self.voice_state, prev_level, level, bubble, self.heat.recovered(self.clock())
+            self.voice_state, prev_level, level, bubble, self.heat.recovered(self.clock()),
+            clean=clean,
         )
         if vp and self.voice_sink:
             await self.voice_sink(envelope("voice.play", self.sid, vp))
