@@ -41,6 +41,9 @@ final class ConversationWatcher: @unchecked Sendable {
     /// When the window started showing no messages (a new chat, or a blink while switching).
     private var emptySince: Date?
     private var sawEmptyChat = false
+    /// The user went to a tab we don't watch (Claude Code). The horse was reset to 0 there, so the
+    /// chat they come back to must be re-identified to get its own panic score back.
+    private var leftForIgnoredMode = false
 
     private struct Tracked {
         var role: ChatMessage.Role
@@ -95,6 +98,12 @@ final class ConversationWatcher: @unchecked Sendable {
         let messages = snapshot.messages
         if snapshot.isIgnoredMode {
             emptySince = nil  // not an empty chat, just a tab we don't watch
+            if !leftForIgnoredMode {
+                leftForIgnoredMode = true
+                // Nothing is judged in the Code tab, so it shouldn't show the chat's panic score:
+                // fresh engine session (heat 0). The chat's score comes back when the user returns.
+                if hasSeenConversation { notifyConversationChange(chatKey: nil) }
+            }
             return
         }
         guard !messages.isEmpty else {
@@ -114,8 +123,9 @@ final class ConversationWatcher: @unchecked Sendable {
 
         // A chat that sat empty is always a new conversation (or a slow-loading old one), even if
         // none of its positions overlap what we remember.
-        if !hasSeenConversation || sawEmptyChat || titleChanged(to: snapshot.title, messages: messages)
-            || isDifferentConversation(messages) {
+        if !hasSeenConversation || sawEmptyChat || leftForIgnoredMode
+            || titleChanged(to: snapshot.title, messages: messages) || isDifferentConversation(messages) {
+            leftForIgnoredMode = false
             let wasSwitch = hasSeenConversation
             resetConversation()
             hasSeenConversation = true
