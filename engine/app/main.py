@@ -16,6 +16,7 @@ from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from app import plugins
+from app.learning import store
 from app.ledger import Ledger
 from app.models import INBOUND_TYPES, PAYLOAD_MODELS, Envelope, ErrorPayload, MessageNew
 from app.session import Session, envelope
@@ -62,8 +63,11 @@ debug_sessions: dict[str, Session] = {}
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await ledger.open()
+    # FR-L1: connect to Atlas in the background so a slow/unreachable cluster never delays startup
+    startup_task = asyncio.create_task(store.startup())
     log.info("engine up", extra={"detectors": plugins.available_detectors()})
     yield
+    startup_task.cancel()
     await ledger.close()
 
 
@@ -79,7 +83,8 @@ async def health() -> dict:
 async def debug_status() -> dict:
     """Which teammates' modules are plugged in right now."""
     return {"detectors": plugins.available_detectors(),
-            "course_correct": plugins._optional_import("app.course_correct.api") is not None}
+            "course_correct": plugins._optional_import("app.course_correct.api") is not None,
+            "mongo": await store.ping(), "mongo_queued": store.queued()}
 
 
 def parse_inbound(raw: Any) -> tuple[Envelope, Any]:
