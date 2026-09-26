@@ -38,6 +38,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from app.detectors import session_brief
 from app.detectors.base import looks_like_instruction, normalize_text
 from app.llm import LLMError, complete_json, fast_model_name, llm_available
 from app.models import Claim, SessionContext
@@ -55,7 +56,9 @@ SKIP_TYPES = {"paper", "url", "package", "code_api", "code", "source_summary"}
 
 GATE_SYSTEM = """You prepare ONE claim from an AI assistant's latest reply for fact-checking.
 You get the recent CONVERSATION (for context only), the assistant's LATEST REPLY, and the CLAIM
-taken from it.
+taken from it. In long chats you also get EARLIER IN THIS CHAT: a summary of older messages
+(the user's goal, what they said, what was decided). Use it to resolve references to things
+set up long ago; the recent conversation wins if the two disagree.
 
 Return:
 - "standalone": the claim rewritten so a stranger understands it WITHOUT the conversation.
@@ -140,8 +143,12 @@ def _window(claim: Claim, session: SessionContext) -> tuple[str, str]:
 
 async def _classify(claim: Claim, session: SessionContext, judge) -> GateResult:
     convo, reply = _window(claim, session)
+    # Long chats: references can point further back than the window ("the max size it can
+    # store" when the database was chosen 30 turns ago). The session brief covers that.
+    brief = session_brief.gate_context(session)
     user = (
-        f"CONVERSATION (earlier messages):\n{convo or '(none)'}\n\n"
+        (f"EARLIER IN THIS CHAT (summary of older messages):\n{brief}\n\n" if brief else "")
+        + f"CONVERSATION (earlier messages):\n{convo or '(none)'}\n\n"
         f"LATEST REPLY:\n{reply}\n\nCLAIM: {claim.quote[:600]}"
     )
     if claim.normalized and claim.normalized != claim.quote:
