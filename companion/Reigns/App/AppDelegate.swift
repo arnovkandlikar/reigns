@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import ApplicationServices
 
 @MainActor
@@ -244,6 +245,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             engine.start()
             apply()
         }
+    }
+
+    /// Menu › Character: Charlie or Marley. Remembered across launches; same voice for both.
+    func setCharacter(_ character: PetCharacter) {
+        guard character != pet.model.character else { return }
+        PetCharacter.saved = character
+        state.character = character
+        // 1) the current character sinks out of view, 2) swap while hidden, 3) the new one rises.
+        withAnimation(.easeIn(duration: 0.25)) {
+            pet.model.isCharacterHidden = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.pet.model.character = character
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.7)) {
+                    self.pet.model.isCharacterHidden = false
+                }
+            }
+        }
+        Log.pet.info("Character: \(character.displayName, privacy: .public)")
+    }
+
+    /// Menu › Language: restarts the engine session for the same chat so it applies immediately.
+    func setLanguage(_ language: PetLanguage) {
+        guard language != state.language else { return }
+        PetLanguage.saved = language
+        state.language = language
+        engine.setLanguage(language)
+        Log.net.info("Language: \(language.displayName, privacy: .public)")
     }
 
     func stopVoice() {

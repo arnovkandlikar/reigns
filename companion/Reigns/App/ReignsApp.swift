@@ -14,6 +14,20 @@ struct ReignsApp: App {
             if !state.axTrusted {
                 Button("Set Up Accessibility…") { appDelegate.showOnboarding() }  // FR-A10
             }
+            Picker("Character", selection: Binding(
+                get: { state.character },
+                set: { appDelegate.setCharacter($0) })) {
+                ForEach(PetCharacter.allCases) { character in
+                    Text(character.displayName).tag(character)
+                }
+            }
+            Picker("Language", selection: Binding(
+                get: { state.language },
+                set: { appDelegate.setLanguage($0) })) {
+                ForEach(PetLanguage.allCases) { language in
+                    Text(language.displayName).tag(language)
+                }
+            }
             Text("Engine: \(state.engineStatus.rawValue)")
             Toggle("Mute Voice", isOn: $state.isVoiceMuted)
                 .onChange(of: state.isVoiceMuted) { _, muted in
@@ -50,6 +64,8 @@ final class AppState {
     var engineStatus = EngineClient.Status.offline
     /// FR-A11: replaying fixtures instead of the engine.
     var isMockEngine = false
+    var character = PetCharacter.saved
+    var language = PetLanguage.saved
     var isVoiceMuted = UserDefaults.standard.bool(forKey: "voiceMuted") {
         didSet { UserDefaults.standard.set(isVoiceMuted, forKey: "voiceMuted") }
     }

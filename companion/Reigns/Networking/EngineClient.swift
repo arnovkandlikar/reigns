@@ -32,6 +32,8 @@ final class EngineClient: NSObject {
     private var sessionID = EngineClient.newSessionID()
     /// The Claude chat this session watches (sent in session.start so its heat is restored).
     private var chatKey: String?
+    /// Sent in session.start (nil = English).
+    private var language: String? = PetLanguage.saved.wireCode
     private var status = Status.offline
     private var attempt = 0
     private var reconnectWork: DispatchWorkItem?
@@ -55,6 +57,13 @@ final class EngineClient: NSObject {
         guard !isRunning else { return }
         isRunning = true
         connect()
+    }
+
+    /// New language takes effect straight away: a fresh session for the same chat, so its score is
+    /// restored through the chat key.
+    func setLanguage(_ language: PetLanguage) {
+        self.language = language.wireCode
+        startNewSession(chatKey: chatKey)
     }
 
     /// Disconnects and stops reconnecting (mock mode takes over).
@@ -158,7 +167,8 @@ final class EngineClient: NSObject {
         let bundle = Bundle.main.infoDictionary
         let companion = bundle?["CFBundleShortVersionString"] as? String ?? "1.0"
         if let hello = encode("session.start", SessionStartPayload(
-            appVersion: claudeVersion(), companionVersion: companion, chatKey: chatKey)) {
+            appVersion: claudeVersion(), companionVersion: companion, chatKey: chatKey,
+            language: language)) {
             transmit(hello, on: task)
         }
         let pending = queue
