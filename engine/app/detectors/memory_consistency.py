@@ -40,19 +40,27 @@ MIN_CONTRADICT_CONFIDENCE = 0.8  # below → "uncertain" (amber), never red
 EVIDENCE_SOURCE = "What you told Claude"
 
 JUDGE_SYSTEM = """You check whether an AI assistant's latest statement or code CONTRADICTS or
-VIOLATES things the USER told it earlier in the conversation (their facts and rules).
+VIOLATES the conversation's MEMORY: things the USER told it (their facts and rules) and facts
+that were VERIFIED earlier against external sources (Wikipedia, paper databases, …).
 
-You get the assistant's CLAIM (text or code) and numbered USER MEMORIES.
+You get the assistant's CLAIM (text or code) and numbered MEMORIES, each tagged with its kind:
+  constraint / user_fact  → what the user said
+  verified_fact           → confirmed true earlier by a source
+  correction              → an earlier false claim and what the source said instead
 Decide:
-- "contradicts": the claim clearly conflicts with a memory — uses a different value than the
-  user stated, breaks a rule the user set, or assumes a setup the user said they don't have.
-- "consistent": the claim clearly respects/agrees with a memory.
-- "unrelated": the memories aren't about what the claim says.
+- "contradicts": the claim clearly conflicts with a memory — a different value than the user
+  stated or than was verified, breaks a user rule, assumes a setup the user doesn't have, or
+  repeats a mistake a correction already fixed.
+- "consistent": the claim clearly agrees with a memory.
+- "unrelated": the memories aren't about the same specific thing as the claim.
 Rules:
-- Only the memories count as the user's truth. Don't use outside knowledge.
+- Use only the memories, not outside knowledge.
+- Same SUBJECT required: a memory about the Eiffel Tower's completion year says nothing about
+  its height.
 - Talking ABOUT something is not violating it ("pandas 2.0 added X" is not a contradiction of
   "user is on pandas 1.5" — but CODE that requires 2.0 for a 1.5 user is).
-- "explanation": one short sentence for the user, starting with "You told Claude …".
+- "explanation": one short sentence for the user. Start with "You told Claude …" for user
+  memories, or "Earlier this was verified: …" for verified facts/corrections.
 Return {"verdict": "contradicts|consistent|unrelated", "memory_index": <int or null>,
         "confidence": 0.0-1.0, "explanation": "..."}"""
 
@@ -283,7 +291,8 @@ class MemoryConsistency(BaseDetector):
         await self._ingest(claim, session)
         uid = memory.user_id_for(session)
         text = claim.code or f"{claim.quote}\n{claim.normalized}"
-        hits = await memory.relevant(uid, text, k=RECALL_K, kinds=USER_KINDS)
+        # All kinds: the user's facts/rules AND earlier evidence-backed verdicts.
+        hits = await memory.relevant(uid, text, k=RECALL_K)
         cards = [c for c, _ in hits]
         if claim.code:
             # Code rarely shares words with "Uses Python 3.8" or "on pandas 1.5", so similarity
@@ -375,8 +384,18 @@ class MemoryConsistency(BaseDetector):
 
     @staticmethod
     def _evidence(card: MemoryCard) -> Evidence:
-        label = "Your rule" if card.kind == "constraint" else "Your setup"
-        return Evidence(source=EVIDENCE_SOURCE, url=None, snippet=snippet(f"{label}: {card.text}"))
+        if card.kind in USER_KINDS:
+            label = "Your rule" if card.kind == "constraint" else "Your setup"
+            return Evidence(
+                source=EVIDENCE_SOURCE, url=None, snippet=snippet(f"{label}: {card.text}")
+            )
+        label = "Verified earlier" if card.kind == "verified_fact" else "Corrected earlier"
+        source = {"claim_verifier": "web/Wikipedia", "reference_auditor": "paper databases"}.get(
+            card.source, "a source"
+        )
+        return Evidence(
+            source=f"Memory ({source})", url=None, snippet=snippet(f"{label}: {card.text}")
+        )
 
 
 detector = MemoryConsistency()

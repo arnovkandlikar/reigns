@@ -567,6 +567,27 @@ async def extract_user_cards(text: str, context: str = "", judge=None) -> list[d
     return out[:MAX_CARDS_PER_MESSAGE]
 
 
+_YEAR_OR_NUM = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def specifics_in_evidence(claim_text: str, result: Any) -> bool:
+    """Every number/year in the claim must appear in the evidence SNIPPETS (not the judge's own
+    explanation, which could simply repeat the claim).
+
+    Second safeguard for verified_fact cards. Live incident: the verifier "supported" "The first
+    mayor of Tórshavn was Jógvan Poulsen, who took office in 1866" from a snippet about him being
+    mayor of a different town — "1866" appeared nowhere in the evidence. Numbers are what such
+    facts hinge on; a fact that goes into long-term memory must have them backed by the source.
+    """
+    plain = normalize_text(" ".join(e.snippet for e in result.evidence)).replace(",", "")
+    words = set(plain.split())
+    for num in _YEAR_OR_NUM.findall(claim_text):
+        n = num.replace(",", "")
+        if n not in words and n.replace(".", " ") not in plain:
+            return False
+    return True
+
+
 def cards_from_verdicts(claims: list[Claim], verdicts: list[ClaimVerdict]) -> list[dict[str, Any]]:
     """Confirmed-only: green+supported-with-evidence → verified_fact;
     red+contradicted-with-evidence → correction. Everything else is ignored."""
@@ -579,7 +600,12 @@ def cards_from_verdicts(claims: list[Claim], verdicts: list[ClaimVerdict]) -> li
         for r in v.detector_results:
             if not r.evidence or r.detector not in ("claim_verifier", "reference_auditor"):
                 continue
-            if v.final == "green" and r.status == "supported" and r.confidence >= 0.8:
+            if (
+                v.final == "green"
+                and r.status == "supported"
+                and r.confidence >= 0.8
+                and specifics_in_evidence(claim.normalized, r)
+            ):
                 out.append(
                     {
                         "kind": "verified_fact",
