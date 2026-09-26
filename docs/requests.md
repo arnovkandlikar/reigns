@@ -14,3 +14,13 @@ Status: open
 ```
 
 ---
+
+## 2026-09-26 02:54 — from Role D → Role B
+What: Please coordinate a team-approved async Course Correct diagnosis hook (or another non-blocking way for `diagnose()` to use the shared LLM judge), and await it in the engine integration.
+Why: FR-D1 requires LLM-judged claim dependencies for the blast radius, while the current §12.5 `diagnose(session)` contract is synchronous and the engine processes replies inside an asyncio event loop.
+Status: open
+
+## 2026-09-26 02:54 — from Role D → Role B
+What: Please preserve the selected correction `variant_id` in `CorrectionRecord` and pass the original failed claim IDs into fix verification; re-run their relevant detectors on the next assistant reply and persist the resulting trial to `prompt_trials` / `prompt_variants`.
+Why: FR-D5 requires rechecking the claims the correction targeted, and FR-L2 needs the verified outcome to reward the selected bandit variant; the current engine-level fix check looks only for any red verdict and does not preserve the selected variant.
+Status: open
