@@ -18,6 +18,7 @@ final class EngineClient: NSObject {
     var onBubble: ((BubbleContent) -> Void)?
     var onVerdicts: ((VerdictsUpdate) -> Void)?
     var onVoice: ((VoicePlay) -> Void)?
+    var onError: ((EngineError) -> Void)?
 
     private static let backoff: [TimeInterval] = [1, 2, 5]
     private static let maxQueued = 200
@@ -214,6 +215,7 @@ final class EngineClient: NSObject {
             case "error":
                 let error = try decoder.decode(Body<EngineError>.self, from: data).payload
                 Log.net.error("Engine error \(error.code, privacy: .public): \(error.message, privacy: .public)")
+                onError?(error)
             case "voice.play":
                 onVoice?(try decoder.decode(Body<VoicePlay>.self, from: data).payload)
             default:

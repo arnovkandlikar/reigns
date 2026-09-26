@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var engine: EngineClient!
     private var inserter: ComposerInserter!
     private let voice = VoicePlayer()
+    /// Assistant replies sent to the engine and still waiting for verdicts (drives the thinking bubble).
+    private var scanning: [String: DispatchWorkItem] = [:]
+    private static let scanTimeout: TimeInterval = 30
     private var pet: PetPanelController!
     private var frontmostClaude: NSRunningApplication?
 
@@ -36,7 +39,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine.onStatus = { [weak self] status in self?.state.engineStatus = status }
         engine.onHeat = { [weak self] heat in self?.pet.apply(heat) }
         engine.onBubble = { [weak self] bubble in self?.pet.apply(bubble) }
-        engine.onVerdicts = { [weak self] verdicts in self?.pet.apply(verdicts) }
+        engine.onVerdicts = { [weak self] verdicts in
+            self?.pet.apply(verdicts)
+            self?.finishScan(verdicts.messageID)
+        }
+        engine.onError = { [weak self] _ in self?.clearScans() }
         engine.onVoice = { [weak self] line in
             guard let self, !self.state.isVoiceMuted, !self.state.isPaused else { return }
             self.voice.play(line)
@@ -47,9 +54,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine.start()
 
         watcher = ConversationWatcher(reader: ConversationReader(rules: rules.conversation))
-        watcher.onMessage = { [weak self] completed in self?.engine.sendMessage(completed) }
+        watcher.onMessage = { [weak self] completed in
+            self?.engine.sendMessage(completed)
+            if completed.message.role == .assistant { self?.startScan(completed.id) }
+        }
         watcher.onConversationChange = { [weak self] chatKey in
             self?.engine.startNewSession(chatKey: chatKey)
+            self?.clearScans()
             self?.pet.resetForNewConversation()
         }
 
@@ -93,6 +104,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Show the thinking bubble for 4 s, as if a reply were being scanned.
+    func previewScanning() {
+        pet.setScanning(true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            MainActor.assumeIsolated { self?.pet.setScanning(!(self?.scanning.isEmpty ?? true)) }
+        }
+    }
+
     /// Recovered for 3 s (what heat.update.recovered does after a verified fix), then Calm.
     func previewRecovered() {
         pet.update(level: 0, heat: 0, bubble: .allClear, recovered: true)
@@ -113,6 +132,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     #endif
+
+    // MARK: - Scanning indicator (thinking bubble)
+
+    private func startScan(_ messageID: String) {
+        let timeout = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.finishScan(messageID) }  // never think forever
+        }
+        scanning[messageID]?.cancel()
+        scanning[messageID] = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.scanTimeout, execute: timeout)
+        pet.setScanning(true)
+    }
+
+    private func finishScan(_ messageID: String) {
+        scanning.removeValue(forKey: messageID)?.cancel()
+        pet.setScanning(!scanning.isEmpty)
+    }
+
+    private func clearScans() {
+        scanning.values.forEach { $0.cancel() }
+        scanning.removeAll()
+        pet.setScanning(false)
+    }
 
     /// FR-A9: paste the correction into Claude's message box (never sends it), then tell the engine.
     private func fixIt(_ correction: Correction, mode: ComposerInserter.Mode?) {

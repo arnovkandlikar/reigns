@@ -22,6 +22,7 @@ struct ReignsApp: App {
                     Button("Level \(level)") { appDelegate.previewLevel(level) }
                 }
                 Button("Recovered") { appDelegate.previewRecovered() }
+                Button("Scanning (thinking)") { appDelegate.previewScanning() }
             }
             Button("Log Conversation") { appDelegate.logConversation() }
             #endif
