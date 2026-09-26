@@ -30,10 +30,10 @@ def summary_session(load_scenario) -> SessionContext:
     return session
 
 
-def test_diagnosis_uses_active_summary_failure_and_names_source_drift(
+async def test_diagnosis_uses_active_summary_failure_and_names_source_drift(
     summary_session: SessionContext,
 ) -> None:
-    profile = api.diagnose(summary_session)
+    profile = await api.diagnose(summary_session)
 
     assert len(profile.failures) == 1
     assert profile.blast_radius == []
@@ -50,11 +50,11 @@ def test_diagnosis_uses_active_summary_failure_and_names_source_drift(
         (4, "fresh_start"),
     ],
 )
-def test_each_nonzero_level_builds_a_level_matched_prompt(
+async def test_each_nonzero_level_builds_a_level_matched_prompt(
     summary_session: SessionContext, level: int, prompt_type: str
 ) -> None:
-    profile = api.diagnose(summary_session)
-    bubble = api.build_bubble(level, profile, summary_session)
+    profile = await api.diagnose(summary_session)
+    bubble = await api.build_bubble(level, profile, summary_session)
 
     assert bubble.level == level
     assert len(bubble.headline) <= 60
@@ -68,20 +68,22 @@ def test_each_nonzero_level_builds_a_level_matched_prompt(
     assert "I don't know" in bubble.correction.text
 
 
-def test_level_zero_has_no_correction(summary_session: SessionContext) -> None:
-    profile = api.diagnose(summary_session)
+async def test_level_zero_has_no_correction(summary_session: SessionContext) -> None:
+    profile = await api.diagnose(summary_session)
 
-    bubble = api.build_bubble(0, profile, summary_session)
+    bubble = await api.build_bubble(0, profile, summary_session)
 
     assert bubble.level == 0
     assert bubble.correction is None
 
 
-def test_disagreed_verdict_is_excluded_from_diagnosis(summary_session: SessionContext) -> None:
-    failed_id = next(iter(api.diagnose(summary_session).failures))
+async def test_disagreed_verdict_is_excluded_from_diagnosis(
+    summary_session: SessionContext,
+) -> None:
+    failed_id = next(iter((await api.diagnose(summary_session)).failures))
     summary_session.disagreed_claim_ids.add(failed_id)
 
-    profile = api.diagnose(summary_session)
+    profile = await api.diagnose(summary_session)
 
     assert profile.failures == []
     assert profile.root_causes == []
