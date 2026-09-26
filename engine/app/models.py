@@ -41,6 +41,7 @@ DetectorName = Literal[
     "pushback",
     "source_faithfulness",
     "code_api_checker",
+    "memory_consistency",  # Role C: contradicts facts/constraints the user stated earlier
 ]
 PromptType = Literal["verify_nudge", "targeted_correction", "diagnostic_reset", "fresh_start"]
 RootCause = Literal[

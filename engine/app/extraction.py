@@ -5,6 +5,7 @@ engine (and teammates without keys) always gets claims to work with.
 """
 from __future__ import annotations
 
+import ast
 import logging
 import re
 import uuid
@@ -34,6 +35,22 @@ HEDGE = re.compile(
 )
 
 
+_REF_TYPES = ("paper", "url", "package", "code_api")
+_VERB = re.compile(
+    r"\b(is|are|was|were|be|been|has|have|had|will|won|did|does|do|can|could|made|built|"
+    r"invented|founded|wrote|discovered|died|born)\b", re.I)
+
+
+def is_fragment(claim: Claim) -> bool:
+    """A tiny piece of a sentence with no number (e.g. "for the World's Fair"). Checking it on
+    its own only produces "couldn't verify" ambers, so it is dropped."""
+    if claim.type in _REF_TYPES or re.search(r"\d", claim.quote):
+        return False
+    if _VERB.search(claim.quote):  # "Sydney is the capital." is short but a real claim
+        return False
+    return len(claim.quote.split()) < 5
+
+
 def is_hedge(quote: str) -> bool:
     return bool(HEDGE.match(quote.strip()))
 
@@ -55,6 +72,8 @@ Return a JSON array (max 12 items). Each item:
  "scope": "public|private"}
 Rules:
 - quote MUST be copied character-for-character from the reply.
+- Each quote is a whole clause that states the claim (subject + what is claimed). Never split
+  off fragments or background details ("for the World's Fair", "in Paris") as extra claims.
 - Each cited paper, URL and software package is its own claim (type paper/url/package).
 - risk high = specific numbers, dates, names, citations, package names; low = general
   explanations, opinions, advice. Skip greetings and filler entirely.
@@ -88,6 +107,37 @@ def repair_quote(quote: str, text: str) -> str | None:
     if squashed and squashed in text:
         return squashed
     return None
+
+
+def code_identifiers(code: str) -> set[str]:
+    """Functions, attributes and keyword-argument names used in a code block (parsed with ast,
+    never executed). Module names from imports are deliberately left out."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return set()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.keyword) and node.arg:
+            names.add(node.arg)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            names.add(node.func.id)
+    return {n for n in names if len(n) > 2}
+
+
+_TICKED_WORD = re.compile(r"`([A-Za-z_][\w.]*)(?:\(\))?`")
+_CALL_WORD = re.compile(r"\b([A-Za-z_][\w.]*)\(")
+
+
+def describes_code(quote: str, identifiers: set[str]) -> bool:
+    """True if a prose claim is just describing the code block's functions/arguments (e.g.
+    "The `retries` argument makes requests retry…"). The Code API Checker already checks those,
+    so checking the sentence again would double-count the same mistake."""
+    mentioned = {m.split(".")[-1] for m in _TICKED_WORD.findall(quote)}
+    mentioned |= {m.split(".")[-1] for m in _CALL_WORD.findall(quote)}
+    return bool(mentioned & identifiers)
 
 
 def _code_claims(text: str, message_id: str, context: str) -> list[Claim]:
@@ -266,7 +316,10 @@ async def extract_claims(
     if not prose_claims:
         prose_claims = _heuristic_claims(text, message_id, context)
 
-    prose_claims = [c for c in prose_claims if not is_hedge(c.quote)]
+    prose_claims = [c for c in prose_claims if not is_hedge(c.quote) and not is_fragment(c)]
+    idents = set().union(*(code_identifiers(c.code or "") for c in claims)) if claims else set()
+    if idents:  # don't double-count what the Code API Checker already checks
+        prose_claims = [c for c in prose_claims if not describes_code(c.quote, idents)]
     exclude = exclude or []
     prose_claims = [c for c in prose_claims if not any(overlaps(c, r) for r in exclude)]
     claims = (claims + prose_claims)[: max(0, MAX_CLAIMS - len(exclude))]

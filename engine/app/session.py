@@ -177,17 +177,40 @@ class Session:
         jobs = [(c, name) for c in claims if c.claim_id not in fast_ids
                 for name in routes[c.claim_id]]
         results: dict[str, list[DetectorResult]] = {c.claim_id: [] for c in claims}
-        rest_results, fast_results = await asyncio.gather(self._run_stage(jobs), fast_task)
-        for (c, _), r in list(zip(jobs, rest_results)) + list(zip(fast_jobs, fast_results)):
-            if r is not None:
-                results[c.claim_id].append(r)
-        # Stage 2 — Consistency Probe where Claim Verifier found no evidence (FR-B4)
-        jobs2 = [(c, "consistency_probe") for c in claims
-                 if "claim_verifier" in routes[c.claim_id]
-                 and triage.needs_consistency_probe(c, results[c.claim_id])]
-        for (c, _), r in zip(jobs2, await self._run_stage(jobs2)):
-            if r is not None:
-                results[c.claim_id].append(r)
+        # G1 latency: the Consistency Probe (5 samples) is slow, so for likely candidates start it
+        # *now*, in parallel with the Claim Verifier, instead of after it. If the verifier finds
+        # evidence (supported/contradicted) the speculative probe is cancelled.
+        speculative = {
+            c.claim_id: asyncio.ensure_future(
+                plugins.run_detector("consistency_probe", c, self.ctx, DETECTOR_TIMEOUT_S))
+            for c in claims
+            if "claim_verifier" in routes[c.claim_id] and triage.could_need_probe(c)
+        } if plugins.get_detector("consistency_probe") else {}
+        try:
+            rest_results, fast_results = await asyncio.gather(self._run_stage(jobs), fast_task)
+            for (c, _), r in list(zip(jobs, rest_results)) + list(zip(fast_jobs, fast_results)):
+                if r is not None:
+                    results[c.claim_id].append(r)
+            # Stage 2 — Consistency Probe where Claim Verifier found no evidence (FR-B4)
+            need = [c for c in claims
+                    if "claim_verifier" in routes[c.claim_id]
+                    and triage.needs_consistency_probe(c, results[c.claim_id])]
+            for c in need:
+                if c.claim_id not in speculative:
+                    speculative[c.claim_id] = asyncio.ensure_future(plugins.run_detector(
+                        "consistency_probe", c, self.ctx, DETECTOR_TIMEOUT_S))
+            needed_ids = {c.claim_id for c in need}
+            for cid, task in speculative.items():
+                if cid not in needed_ids:
+                    task.cancel()  # verifier found evidence: probe not needed
+            for c in need:
+                r = await speculative[c.claim_id]
+                if r is not None:
+                    results[c.claim_id].append(r)
+        finally:
+            for task in speculative.values():
+                if not task.done():
+                    task.cancel()
         t_detect = time.perf_counter()
 
         # Aggregate (§8.4)

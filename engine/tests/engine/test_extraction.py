@@ -89,3 +89,43 @@ async def test_private_context_claims_are_not_checked(monkeypatch):
     claims = await extract_claims(session_with(text), "a", text)
     assert sorted(c.quote for c in claims) == ["The Eiffel Tower was completed in 1889.",
                                                "Vaswani et al. (2017)"]
+
+
+def test_code_identifiers_and_describes_code():
+    code = "import requests\nr = requests.get(url, timeout=10, retries=3)\ndf = pd.read_csv(x)\n"
+    ids = extraction.code_identifiers(code)
+    assert {"get", "retries", "timeout", "read_csv"} <= ids
+    assert "requests" not in ids  # module names are not identifiers here
+    assert extraction.describes_code("The `retries` argument makes requests retry.", ids)
+    assert extraction.describes_code("Call pd.read_csv() on the text.", ids)
+    assert not extraction.describes_code("Requests was created by Kenneth Reitz in 2011.", ids)
+
+
+async def test_prose_about_the_code_is_not_double_counted(monkeypatch, load_scenario):
+    reply = [m for m in load_scenario("code_api")["companion_to_engine"]
+             if m["type"] == "message.new" and m["payload"]["role"] == "assistant"][0]
+    text = reply["payload"]["text"]
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+
+    async def fake_json(*a, **k):
+        return [{"quote": "The `retries` argument makes requests retry failed downloads "
+                          "automatically.", "normalized": "x", "type": "fact", "risk": "high"}]
+
+    monkeypatch.setattr(extraction, "complete_json", fake_json)
+    claims = await extract_claims(session_with(text), "a", text)
+    assert [c.type for c in claims] == ["code_api"]
+
+
+def _c(quote, ctype="fact"):
+    from app.models import Claim
+    return Claim(claim_id="x", message_id="m", quote=quote, normalized=quote, type=ctype,
+                 risk="high")
+
+
+def test_fragments_are_dropped_but_short_facts_with_numbers_kept():
+    assert extraction.is_fragment(_c("for the World's Fair"))
+    assert not extraction.is_fragment(_c("completed in 1899", "number"))
+    assert not extraction.is_fragment(_c("The Eiffel Tower is in Paris, France."))
+    assert not extraction.is_fragment(_c("Vaswani et al.", "paper"))
+    assert not extraction.is_fragment(_c("Sydney is the capital."))  # short but a real claim
+    assert extraction.is_fragment(_c("in Paris"))
