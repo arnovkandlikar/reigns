@@ -28,7 +28,8 @@ struct PetView: View {
 
     /// The horse is drawn in 64×84 base points, then scaled up.
     static let scale: CGFloat = 2
-    static let panelSize = CGSize(width: 96 * scale, height: 104 * scale)
+    /// Extra headroom above the fully-risen horse for the scanning thought bubble.
+    static let panelSize = CGSize(width: 96 * scale, height: 138 * scale)
     private static let baseHorseSize = CGSize(width: 64, height: 84)
     private static var horseSize: CGSize {
         CGSize(width: baseHorseSize.width * scale, height: baseHorseSize.height * scale)
@@ -52,8 +53,9 @@ struct PetView: View {
 
     /// Extra room above the horse's visible top that accessories use (the Meltdown sign), so the
     /// bubble opens above them.
-    static func accessoryClearance(level: Int, recovered: Bool = false) -> CGFloat {
-        PetExpression(level: level, recovered: recovered) == .meltdown ? 16 * scale : 0
+    static func accessoryClearance(level: Int, recovered: Bool = false, scanning: Bool = false) -> CGFloat {
+        if scanning { return 52 * scale }  // thought bubble
+        return PetExpression(level: level, recovered: recovered) == .meltdown ? 16 * scale : 0
     }
 
     private var expression: PetExpression {
@@ -73,6 +75,12 @@ struct PetView: View {
                 }
                 .overlay(alignment: .topTrailing) {
                     HeatBadge(heat: model.heat).offset(x: 14, y: -2)
+                }
+                .overlay {
+                    ThoughtBubble(time: timeline.date.timeIntervalSinceReferenceDate)
+                        .opacity(model.isScanning ? 1 : 0)
+                        .scaleEffect(model.isScanning ? 1 : 0.6, anchor: .bottomLeading)
+                        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: model.isScanning)
                 }
                 .scaleEffect(x: 1, y: motion.breath, anchor: .bottom)
                 .rotationEffect(motion.tilt, anchor: .bottom)
@@ -358,6 +366,103 @@ private struct Mouth: View {
     }
 
     private var stroke: StrokeStyle { StrokeStyle(lineWidth: 1.8, lineCap: .round) }
+}
+
+// MARK: - Scanning thought bubble
+
+/// Shown while the engine checks a reply: a thought bubble above the head with a tiny horse
+/// galloping inside. Laid out in the 64×84 horse frame (it sits in the headroom above it).
+private struct ThoughtBubble: View {
+    let time: TimeInterval
+
+    var body: some View {
+        ZStack {
+            // Trail of little thought dots rising from the head.
+            Circle().fill(.white).overlay(Circle().stroke(Self.outline, lineWidth: 0.7))
+                .frame(width: 3.5, height: 3.5).position(x: 50, y: -12)
+            Circle().fill(.white).overlay(Circle().stroke(Self.outline, lineWidth: 0.7))
+                .frame(width: 5, height: 5).position(x: 54, y: -19)
+
+            ZStack {
+                Cloud().fill(.white)
+                Cloud().stroke(Self.outline, lineWidth: 0.8)
+                GallopingHorse(time: time).frame(width: 26, height: 17).offset(y: 1)
+            }
+            .frame(width: 40, height: 28)
+            .position(x: 60, y: -35)
+        }
+        .frame(width: 64, height: 84)
+    }
+
+    private static let outline = Color(white: 0.55)
+}
+
+/// Rounded cloud: a capsule with a few bumps along the top.
+private struct Cloud: Shape {
+    func path(in rect: CGRect) -> Path {
+        // Union the pieces so the outline is one smooth cloud, not overlapping circles.
+        var cloud = Path(roundedRect: rect.insetBy(dx: 0, dy: rect.height * 0.12),
+                         cornerRadius: rect.height * 0.38)
+        let bump = rect.height * 0.42
+        for x in [0.3, 0.52, 0.72] {
+            let circle = Path(ellipseIn: CGRect(x: rect.minX + rect.width * x - bump / 2, y: rect.minY - bump * 0.1,
+                                                width: bump, height: bump))
+            cloud = cloud.union(circle)
+        }
+        return cloud
+    }
+}
+
+/// Very simple running horse: bobbing body, alternating legs, streaming tail, scrolling ground.
+private struct GallopingHorse: View {
+    let time: TimeInterval
+
+    private static let ink = Color(red: 0.36, green: 0.22, blue: 0.12)
+
+    var body: some View {
+        let phase = time * 2 * .pi * 2.6  // strides per second
+        let swing = CGFloat(sin(phase))
+        let bob = -1.2 * abs(CGFloat(sin(phase)))
+
+        ZStack {
+            // Ground moving backwards.
+            Path { p in
+                p.move(to: CGPoint(x: 0, y: 16.5))
+                p.addLine(to: CGPoint(x: 26, y: 16.5))
+            }
+            .stroke(Self.ink.opacity(0.45),
+                    style: StrokeStyle(lineWidth: 0.8, lineCap: .round, dash: [3, 2.5],
+                                       dashPhase: CGFloat((time * 14).truncatingRemainder(dividingBy: 5.5))))
+
+            Group {
+                // Legs: front pair and back pair swing in opposition.
+                leg(x: 16, angle: 28 * swing)
+                leg(x: 14.5, angle: -28 * swing)
+                leg(x: 8, angle: -28 * swing)
+                leg(x: 6.5, angle: 28 * swing)
+                // Tail.
+                Capsule().fill(Self.ink).frame(width: 1.6, height: 6)
+                    .rotationEffect(.degrees(60 + 10 * Double(swing)), anchor: .top)
+                    .position(x: 4, y: 7)
+                // Body, neck, head.
+                Capsule().fill(Self.ink).frame(width: 14, height: 6.5).position(x: 11, y: 9)
+                Capsule().fill(Self.ink).frame(width: 4, height: 8)
+                    .rotationEffect(.degrees(35)).position(x: 18, y: 5.5)
+                Capsule().fill(Self.ink).frame(width: 7, height: 3.6)
+                    .rotationEffect(.degrees(25)).position(x: 21.5, y: 3.5)
+                // Ear.
+                Capsule().fill(Self.ink).frame(width: 1.2, height: 2.6)
+                    .rotationEffect(.degrees(15)).position(x: 19.5, y: 1)
+            }
+            .offset(y: bob)
+        }
+    }
+
+    private func leg(x: CGFloat, angle: CGFloat) -> some View {
+        Capsule().fill(Self.ink).frame(width: 1.7, height: 7)
+            .rotationEffect(.degrees(Double(angle)), anchor: .top)
+            .position(x: x, y: 14.5)
+    }
 }
 
 // MARK: - Accessories (FR-A7)

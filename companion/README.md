@@ -61,6 +61,9 @@ Or open `Reigns.xcodeproj` in Xcode and press Run.
       Claude, focuses the box, saves the clipboard, pastes with ⌘V, restores the clipboard after
       300 ms, sends `correction.inserted`. Never presses Enter. If the box can't be found the prompt
       is left on the clipboard and the bubble says to press ⌘V (PRD R2).
+- [x] Scanning indicator: while the engine checks a reply Reigns sent (message.new → its
+      verdicts.update; 30 s safety timeout), a thought bubble with a galloping horse shows above
+      the pet. Debug: menu › Preview Level › Scanning (thinking).
 - [ ] · FR-A6/A7 pet levels · FR-A9 Fix it ·
       FR-A10 onboarding · FR-A11 mock mode
 

@@ -69,6 +69,13 @@ final class PetPanelController {
         positionBubble(animated: true)
     }
 
+    /// Thinking bubble on/off while the engine checks a reply; the speech bubble moves above it.
+    func setScanning(_ scanning: Bool) {
+        guard model.isScanning != scanning else { return }
+        model.isScanning = scanning
+        positionBubble(animated: true)
+    }
+
     func apply(_ bubble: BubbleContent) {
         model.bubble = bubble
     }
@@ -222,7 +229,8 @@ final class PetPanelController {
         let pet = targetFrame(in: window)
         let x = PetSide.saved == .right ? pet.maxX - BubbleView.width : pet.minX
         let y = pet.minY + PetView.visibleHeight(level: model.level, recovered: model.isRecovered)
-            + PetView.accessoryClearance(level: model.level, recovered: model.isRecovered) + 4
+            + PetView.accessoryClearance(level: model.level, recovered: model.isRecovered,
+                                         scanning: model.isScanning) + 4
         bubblePanel.place(bottomLeft: CGPoint(x: x, y: y), animated: animated)
     }
 
