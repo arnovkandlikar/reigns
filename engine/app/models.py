@@ -96,6 +96,9 @@ class SessionStart(_Strict):
     app: str = "claude"
     app_version: str = "unknown"
     companion_version: str = "1.0"
+    # Stable id of the Claude chat this session watches: the message_id of the chat's first
+    # message (position 0). Lets the engine restore that chat's heat when the user flips back.
+    chat_key: Optional[str] = None
 
 
 class MessageNew(_Strict):

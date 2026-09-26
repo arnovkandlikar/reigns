@@ -8,6 +8,8 @@ from pathlib import Path
 
 import aiosqlite
 
+from typing import Any, Optional
+
 from app.models import Claim, ClaimVerdict, CorrectionRecord, MessageNew, utc_now_iso
 
 log = logging.getLogger("reigns.ledger")
@@ -15,6 +17,7 @@ log = logging.getLogger("reigns.ledger")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
   session_id TEXT, message_id TEXT, role TEXT, position INTEGER, text TEXT, ts TEXT,
+  heat INTEGER,
   PRIMARY KEY (session_id, message_id));
 CREATE TABLE IF NOT EXISTS claims (
   claim_id TEXT PRIMARY KEY, session_id TEXT, message_id TEXT, quote TEXT, normalized TEXT,
@@ -29,7 +32,13 @@ CREATE TABLE IF NOT EXISTS corrections (
 CREATE TABLE IF NOT EXISTS feedback (
   id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, claim_id TEXT, kind TEXT,
   note TEXT, ts TEXT);
+CREATE TABLE IF NOT EXISTS chats (
+  chat_key TEXT PRIMARY KEY, session_id TEXT, heat INTEGER, level INTEGER,
+  red_count INTEGER, amber_count INTEGER, bubble TEXT, updated_at TEXT);
 """
+# Columns added after a table first shipped: (table, column, type). Older reigns.db files get
+# them via ALTER TABLE on open, so nobody has to delete their database.
+MIGRATIONS = [("messages", "heat", "INTEGER")]
 
 
 class Ledger:
@@ -42,6 +51,11 @@ class Ledger:
         try:
             self._db = await aiosqlite.connect(self.path)
             await self._db.executescript(SCHEMA)
+            for table, column, type_ in MIGRATIONS:
+                async with self._db.execute(f"PRAGMA table_info({table})") as cur:
+                    have = {row[1] for row in await cur.fetchall()}
+                if column not in have:
+                    await self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {type_}")
             await self._db.commit()
         except Exception as exc:
             log.error("ledger open failed (continuing without ledger): %s", exc)
@@ -61,11 +75,58 @@ class Ledger:
         except Exception as exc:
             log.error("ledger write failed: %s", exc)
 
-    async def message(self, session_id: str, msg: MessageNew) -> None:
+    async def message(self, session_id: str, msg: MessageNew, heat: Optional[int] = None) -> None:
         await self._run(
-            "INSERT OR REPLACE INTO messages VALUES (?,?,?,?,?,?)",
-            [(session_id, msg.message_id, msg.role, msg.position, msg.text, utc_now_iso())],
+            "INSERT OR REPLACE INTO messages (session_id, message_id, role, position, text, ts, heat)"
+            " VALUES (?,?,?,?,?,?,?)",
+            [(session_id, msg.message_id, msg.role, msg.position, msg.text, utc_now_iso(), heat)],
         )
+
+    async def message_heat(self, session_id: str, message_id: str, heat: int) -> None:
+        """Heat (panic rating) right after this reply was judged."""
+        await self._run(
+            "UPDATE messages SET heat = ? WHERE session_id = ? AND message_id = ?",
+            [(heat, session_id, message_id)],
+        )
+
+    # ---------------------------------------------------------------- per-chat heat
+    async def save_chat_heat(
+        self, chat_key: str, session_id: str, heat: int, level: int, red: int, amber: int
+    ) -> None:
+        await self._run(
+            "INSERT INTO chats (chat_key, session_id, heat, level, red_count, amber_count, updated_at)"
+            " VALUES (?,?,?,?,?,?,?) ON CONFLICT(chat_key) DO UPDATE SET session_id=excluded.session_id,"
+            " heat=excluded.heat, level=excluded.level, red_count=excluded.red_count,"
+            " amber_count=excluded.amber_count, updated_at=excluded.updated_at",
+            [(chat_key, session_id, heat, level, red, amber, utc_now_iso())],
+        )
+
+    async def save_chat_bubble(self, chat_key: str, bubble_json: str) -> None:
+        await self._run(
+            "INSERT INTO chats (chat_key, bubble, updated_at) VALUES (?,?,?)"
+            " ON CONFLICT(chat_key) DO UPDATE SET bubble=excluded.bubble,"
+            " updated_at=excluded.updated_at",
+            [(chat_key, bubble_json, utc_now_iso())],
+        )
+
+    async def load_chat(self, chat_key: str) -> Optional[dict[str, Any]]:
+        """Saved heat/level/counts/bubble for a chat, or None. Never raises."""
+        if not self._db:
+            return None
+        try:
+            async with self._db.execute(
+                "SELECT heat, level, red_count, amber_count, bubble FROM chats WHERE chat_key = ?",
+                (chat_key,),
+            ) as cur:
+                row = await cur.fetchone()
+        except Exception as exc:
+            log.error("ledger read failed: %s", exc)
+            return None
+        if row is None:
+            return None
+        heat, level, red, amber, bubble = row
+        return {"heat": heat or 0, "level": level or 0, "red_count": red or 0,
+                "amber_count": amber or 0, "bubble": bubble}
 
     async def claims(self, session_id: str, claims: list[Claim]) -> None:
         await self._run(
