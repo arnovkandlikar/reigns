@@ -108,7 +108,8 @@ class Builder:
             heat_items.append((c.claim_id, final, is_caved(results)))
         self.now += 10
         self.heat.add_claims(heat_items, self.now)
-        if fixed_correction:
+        if fixed_correction:  # FR-D5: targeted claims resolved, then −20 (engine does the same)
+            self.heat.resolve(list(self.heat.contributions), self.now)
             self.heat.verified_fix(self.now)
         level = self.heat.target_level(self.now)
         red = sum(v.final == "red" for v in verdicts)

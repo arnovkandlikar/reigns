@@ -215,19 +215,38 @@ async def record_feedback(verdict: ClaimVerdict) -> None:
 
 
 async def record_trial(correction: CorrectionRecord, app: str) -> None:
-    """→ `prompt_trials` once a correction's outcome is known (FR-L5 c, FR-D5)."""
+    """FR-L5 c / FR-D5 / FR-L2: once a correction's outcome is known,
+    → `prompt_trials` (one row per correction) and
+    → `prompt_variants` ($inc alpha on success, beta on failure) for Role D's bandit.
+    Counts start at 0 here; the bandit adds its own prior (e.g. Beta(1,1))."""
     if not enabled() or correction.fixed is None:
         return
+    variant_id = correction.variant_id or f"default:{correction.prompt_type}:v1"
     try:
         await _insert("prompt_trials", {
             "_id": correction.correction_id,
-            "variant_id": correction.variant_id or f"default:{correction.prompt_type}:v1",
+            "variant_id": variant_id,
             "level": correction.level,
             "fixed": bool(correction.fixed),
             "origin": "live",
             "app": app,
             "created_at": utc_now_iso(),
         })
+        db = get_db()
+        failure_type, prompt_type, variant = (variant_id.split(":") + ["", "", ""])[:3]
+        await db.prompt_variants.update_one(
+            {"_id": variant_id},
+            {
+                "$inc": {"alpha" if correction.fixed else "beta": 1},
+                "$set": {"updated_at": utc_now_iso()},
+                "$setOnInsert": {
+                    "failure_type": failure_type,
+                    "prompt_type": prompt_type or correction.prompt_type,
+                    "variant": variant or "v1",
+                },
+            },
+            upsert=True,
+        )
     except Exception as exc:
         log.error("record_trial failed: %s", exc)
 

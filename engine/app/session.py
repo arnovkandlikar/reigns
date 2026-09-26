@@ -13,6 +13,7 @@ from typing import Callable, Optional
 
 from app import extraction, plugins, triage
 from app.aggregate import final_status, is_caved, to_verdict
+from app.fixcheck import verify_fix
 from app.heat import HeatState
 from app.ledger import Ledger
 from app.learning import store
@@ -201,15 +202,15 @@ class Session:
         await self.ledger.claims(self.sid, claims)
         await self.ledger.verdicts(self.sid, verdicts)
 
-        # Heat (§9) + verified-fix check (FR-D5 minimal version; Role D may take over)
+        # Heat (§9) + verified-fix check (FR-D5)
         now = self.clock()
         prev_level = self.heat.displayed_level
         self.heat.add_claims(heat_items, now)
-        self._check_fix(verdicts, now)
+        self._check_fix(claims, verdicts, now)
         level = self.heat.target_level(now)
         self.ctx.heat, self.ctx.level = self.heat.heat, level
 
-        bubble = plugins.build_bubble(level, self.ctx)
+        bubble = await plugins.build_bubble(level, self.ctx)
         await self._record_correction(bubble)
 
         out = [
@@ -226,14 +227,23 @@ class Session:
                  "total_ms": int((time.perf_counter() - t0) * 1000)})
         return out
 
-    def _check_fix(self, verdicts: list[ClaimVerdict], now: float) -> None:
+    def _check_fix(self, claims: list[Claim], verdicts: list[ClaimVerdict], now: float) -> None:
+        """FR-D5: judge the first reply after an inserted correction against its targets."""
         pending = [c for c in self.ctx.corrections if c.inserted and c.fixed is None]
         if not pending:
             return
         corr = pending[-1]
-        corr.fixed = not any(v.final == "red" for v in verdicts)
+        targets = [self.ctx.claims[i] for i in corr.target_claim_ids if i in self.ctx.claims]
+        corr.fixed, corr.fix_reason = verify_fix(targets, claims, verdicts)
         if corr.fixed:
+            # The targeted claims are resolved: they leave the bubble and stop counting toward
+            # heat, then the −20 for a verified fix applies (§9) and Recovered shows for 3 s.
+            self.ctx.resolved_claim_ids.update(corr.target_claim_ids)
+            self.heat.resolve(corr.target_claim_ids, now)
             self.heat.verified_fix(now)
+        log.info("fix verified" if corr.fixed else "fix not verified",
+                 extra={"session_id": self.sid, "correction_id": corr.correction_id,
+                        "variant_id": corr.variant_id, "reason": corr.fix_reason})
         self._spawn(self.ledger.correction(self.sid, corr))
         self._spawn(store.record_trial(corr, self.ctx.app))
         plugins.on_fix_outcome(self.ctx, corr.correction_id, corr.fixed)
@@ -241,10 +251,17 @@ class Session:
     async def _record_correction(self, bubble: BubbleContent) -> None:
         if not bubble.correction:
             return
+        cid = bubble.correction.correction_id
+        flagged = [v.claim_id for v in self.ctx.active_verdicts() if v.final in ("red", "amber")]
+        shown = [p.claim_id for p in bubble.problems]
         rec = CorrectionRecord(
-            correction_id=bubble.correction.correction_id,
+            correction_id=cid,
             prompt_type=bubble.correction.prompt_type,
-            level=bubble.level, text=bubble.correction.text,
+            level=bubble.level,
+            text=bubble.correction.text,
+            # FR-L2: Role D's bandit tags the variant it chose via session.cache
+            variant_id=self.ctx.cache.get(f"course_correct:variant:{cid}"),
+            target_claim_ids=list(dict.fromkeys(shown + flagged)),
         )
         self.ctx.corrections.append(rec)
         await self.ledger.correction(self.sid, rec)
@@ -272,6 +289,6 @@ class Session:
         if v:
             self._spawn(store.record_feedback(v))
         level = self.heat.target_level(self.clock())
-        bubble = plugins.build_bubble(level, self.ctx)
+        bubble = await plugins.build_bubble(level, self.ctx)
         await self._record_correction(bubble)
         return [self._heat_env(), envelope("bubble.content", self.sid, bubble)]

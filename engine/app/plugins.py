@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import logging
 import time
 import uuid
@@ -180,19 +181,37 @@ def fallback_bubble(level: int, session: SessionContext) -> BubbleContent:
     )
 
 
-def build_bubble(level: int, session: SessionContext) -> BubbleContent:
+COURSE_CORRECT_TIMEOUT_S = 4.0  # an LLM-assisted diagnose() must not stall the verdict (G1)
+
+
+async def _maybe_await(value: Any) -> Any:
+    return await value if inspect.isawaitable(value) else value
+
+
+async def build_bubble(level: int, session: SessionContext) -> BubbleContent:
+    """Role D's diagnose()/build_bubble() may be sync (the original §12.5 contract) or async
+    (so diagnose can call the shared LLM judge). Either way it gets COURSE_CORRECT_TIMEOUT_S,
+    after which the fallback bubble is used."""
     mod = _optional_import("app.course_correct.api")
     if mod and hasattr(mod, "diagnose") and hasattr(mod, "build_bubble"):
-        try:
-            profile = mod.diagnose(session)
+
+        async def run() -> BubbleContent:
+            profile = await _maybe_await(mod.diagnose(session))
             if isinstance(profile, dict):
                 profile = DriftProfile.model_validate(profile)
-            bubble = mod.build_bubble(level, profile, session)
+            bubble = await _maybe_await(mod.build_bubble(level, profile, session))
             if isinstance(bubble, dict):
                 bubble = BubbleContent.model_validate(bubble)
+            return bubble
+
+        try:
+            bubble = await asyncio.wait_for(run(), timeout=COURSE_CORRECT_TIMEOUT_S)
             if level == 0:
                 bubble.correction = None  # §12.2: correction is null at level 0
             return bubble
+        except asyncio.TimeoutError:
+            log.error("course_correct timed out after %.0fs, using fallback bubble",
+                      COURSE_CORRECT_TIMEOUT_S)
         except Exception as exc:
             log.error("course_correct failed, using fallback bubble: %s", exc)
     return fallback_bubble(level, session)

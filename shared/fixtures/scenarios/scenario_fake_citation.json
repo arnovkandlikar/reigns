@@ -430,8 +430,8 @@
         "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
         "ts": "2026-10-01T14:03:22Z",
         "payload": {
-          "heat": 45,
-          "level": 2,
+          "heat": 0,
+          "level": 0,
           "recovered": true,
           "red_count": 0,
           "amber_count": 0
@@ -442,7 +442,7 @@
         "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
         "ts": "2026-10-01T14:03:22Z",
         "payload": {
-          "level": 2,
+          "level": 0,
           "headline": "Fixed it! Claude corrected itself.",
           "problems": [],
           "pattern_text": "",
