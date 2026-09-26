@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from app import plugins
 from app import voice
+from app.detectors import session_brief
 from app.learning import store
 from app.ledger import Ledger
 from app.models import INBOUND_TYPES, PAYLOAD_MODELS, Envelope, ErrorPayload, MessageNew
@@ -183,6 +184,14 @@ def _debug_session(session_id: str) -> Session:
     if session_id not in debug_sessions:
         debug_sessions[session_id] = Session(session_id, ledger)
     return debug_sessions[session_id]
+
+
+@app.get("/debug/brief")
+async def debug_brief(session_id: str = "debug") -> dict:
+    """Session Brief for a debug session (Role C): the paste-into-Claude text, brought up to date."""
+    s = _debug_session(session_id)
+    await session_brief.refresh(s.ctx)
+    return {"text": session_brief.for_claude(s.ctx), "turns": session_brief.assistant_turns(s.ctx)}
 
 
 @app.post("/debug/message")

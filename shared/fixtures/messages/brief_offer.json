@@ -1,0 +1,12 @@
+{
+  "type": "brief.offer",
+  "session_id": "d0c7396f-b237-56dd-8be0-0bbffa7bd71e",
+  "ts": "2026-10-01T14:03:22Z",
+  "payload": {
+    "reason": "long_chat",
+    "headline": "Long chat! Want me to refresh Claude's memory of what matters?",
+    "action": "Paste a context refresh",
+    "text": "Quick context refresh before we continue. Please keep this in mind:\nGoal: write a literature review on transformer attention.",
+    "turns": 20
+  }
+}

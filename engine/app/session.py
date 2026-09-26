@@ -16,8 +16,10 @@ from app.aggregate import final_status, is_caved, to_verdict
 from app.fixcheck import verify_fix
 from app.heat import HeatState
 from app.ledger import Ledger
+from app.detectors import session_brief
 from app.learning import memory, store
 from app.models import (
+    BriefOffer,
     BubbleContent,
     ChatMessage,
     Claim,
@@ -318,6 +320,13 @@ class Session:
         bubble = await plugins.build_bubble(level, self.ctx)
         await self._record_correction(bubble)
         out.append(envelope("bubble.content", self.sid, bubble))
+        if level <= 1:  # never cover a warning bubble with a refresh offer
+            offer = session_brief.offer(self.ctx)  # once per judged reply (it marks itself)
+            if offer:
+                try:
+                    out.append(envelope("brief.offer", self.sid, BriefOffer(**offer)))
+                except ValueError as exc:  # a malformed offer must never break the reply
+                    log.warning("brief offer dropped: %s", exc)
         await self.ledger.message_heat(self.sid, msg.message_id, self.heat.heat)
         if self.chat_key:
             await self.ledger.save_chat_bubble(self.chat_key, bubble.model_dump_json())

@@ -1,0 +1,41 @@
+{
+  "$id": "reigns/brief_offer.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Payload of the 'brief.offer' WebSocket message (PRD \u00a712).",
+  "properties": {
+    "action": {
+      "title": "Action",
+      "type": "string"
+    },
+    "headline": {
+      "title": "Headline",
+      "type": "string"
+    },
+    "reason": {
+      "enum": [
+        "long_chat",
+        "forgot"
+      ],
+      "title": "Reason",
+      "type": "string"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "turns": {
+      "title": "Turns",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "reason",
+    "headline",
+    "action",
+    "text",
+    "turns"
+  ],
+  "title": "BriefOffer",
+  "type": "object"
+}

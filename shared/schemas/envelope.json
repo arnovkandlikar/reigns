@@ -27,6 +27,7 @@
         "heat.update",
         "bubble.content",
         "voice.play",
+        "brief.offer",
         "error"
       ],
       "title": "Type",

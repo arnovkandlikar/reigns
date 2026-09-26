@@ -65,6 +65,7 @@ MessageType = Literal[
     "heat.update",
     "bubble.content",
     "voice.play",
+    "brief.offer",
     "error",
 ]
 
@@ -195,6 +196,16 @@ class BubbleContent(_Strict):
     correction: Optional[Correction] = None  # null at level 0
 
 
+class BriefOffer(_Strict):
+    """Engine → companion: offer a "context refresh" (Role C's Session Brief). `text` is what the
+    user can paste into Claude; headline/action are already in the session's language."""
+    reason: Literal["long_chat", "forgot"]
+    headline: str
+    action: str
+    text: str
+    turns: int
+
+
 class VoicePlay(_Strict):
     text: str
     audio_b64: str
@@ -218,6 +229,7 @@ PAYLOAD_MODELS: dict[str, type[BaseModel]] = {
     "heat.update": HeatUpdate,
     "bubble.content": BubbleContent,
     "voice.play": VoicePlay,
+    "brief.offer": BriefOffer,
     "error": ErrorPayload,
 }
 INBOUND_TYPES = {"session.start", "session.update", "message.new", "correction.inserted",
