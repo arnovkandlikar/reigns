@@ -5,6 +5,7 @@ engine (and teammates without keys) always gets claims to work with.
 """
 from __future__ import annotations
 
+import ast
 import logging
 import re
 import uuid
@@ -88,6 +89,37 @@ def repair_quote(quote: str, text: str) -> str | None:
     if squashed and squashed in text:
         return squashed
     return None
+
+
+def code_identifiers(code: str) -> set[str]:
+    """Functions, attributes and keyword-argument names used in a code block (parsed with ast,
+    never executed). Module names from imports are deliberately left out."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return set()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.keyword) and node.arg:
+            names.add(node.arg)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            names.add(node.func.id)
+    return {n for n in names if len(n) > 2}
+
+
+_TICKED_WORD = re.compile(r"`([A-Za-z_][\w.]*)(?:\(\))?`")
+_CALL_WORD = re.compile(r"\b([A-Za-z_][\w.]*)\(")
+
+
+def describes_code(quote: str, identifiers: set[str]) -> bool:
+    """True if a prose claim is just describing the code block's functions/arguments (e.g.
+    "The `retries` argument makes requests retry…"). The Code API Checker already checks those,
+    so checking the sentence again would double-count the same mistake."""
+    mentioned = {m.split(".")[-1] for m in _TICKED_WORD.findall(quote)}
+    mentioned |= {m.split(".")[-1] for m in _CALL_WORD.findall(quote)}
+    return bool(mentioned & identifiers)
 
 
 def _code_claims(text: str, message_id: str, context: str) -> list[Claim]:
@@ -267,6 +299,9 @@ async def extract_claims(
         prose_claims = _heuristic_claims(text, message_id, context)
 
     prose_claims = [c for c in prose_claims if not is_hedge(c.quote)]
+    idents = set().union(*(code_identifiers(c.code or "") for c in claims)) if claims else set()
+    if idents:  # don't double-count what the Code API Checker already checks
+        prose_claims = [c for c in prose_claims if not describes_code(c.quote, idents)]
     exclude = exclude or []
     prose_claims = [c for c in prose_claims if not any(overlaps(c, r) for r in exclude)]
     claims = (claims + prose_claims)[: max(0, MAX_CLAIMS - len(exclude))]
