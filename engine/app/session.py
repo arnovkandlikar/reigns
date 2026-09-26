@@ -16,7 +16,7 @@ from app.aggregate import final_status, is_caved, to_verdict
 from app.fixcheck import verify_fix
 from app.heat import HeatState
 from app.ledger import Ledger
-from app.learning import store
+from app.learning import memory, store
 from app.models import (
     BubbleContent,
     ChatMessage,
@@ -244,6 +244,7 @@ class Session:
             envelope("bubble.content", self.sid, bubble),
         ]
         self._spawn(store.record_verdicts(self.ctx, claims, verdicts))
+        self._spawn(memory.on_verdicts(self.ctx, claims, verdicts))
         self._spawn(self._maybe_voice(prev_level, level, bubble))
         log.info("processed reply", extra={"session_id": self.sid, "message_id": msg.message_id,
                  "claims": len(claims), "extract_ms": int((t_extract - t0) * 1000),

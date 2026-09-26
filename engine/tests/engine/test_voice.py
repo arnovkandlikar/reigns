@@ -9,6 +9,13 @@ from app import voice
 from app.models import BubbleContent, BubbleProblem
 
 
+@pytest.fixture(autouse=True)
+def _plain_style_no_llm(monkeypatch):
+    """Existing tests check exact wording: plain style, and no real LLM summary calls."""
+    monkeypatch.setenv("REIGNS_VOICE_STYLE", "plain")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+
 @pytest.fixture
 def api(monkeypatch, tmp_path):
     calls = []
@@ -97,7 +104,8 @@ def test_full_mode_reads_whole_bubble(monkeypatch):
     many = full_bubble(ids=[f"c{i}" for i in range(10)])
     many.pattern_text = " ".join(["word"] * 100)
     capped = voice.line_for(0, 2, many, False)
-    assert "Plus 7 more." in capped and len(capped.split()) == voice.FULL_MAX_WORDS
+    assert "Plus 7 more." in capped and len(capped.split()) <= voice.FULL_MAX_WORDS
+    assert capped.endswith(".") and "word word" not in capped  # stops at a sentence end
 
 
 async def test_full_mode_does_not_repeat_itself(api, monkeypatch):
@@ -108,3 +116,81 @@ async def test_full_mode_does_not_repeat_itself(api, monkeypatch):
     assert await voice.maybe_speak(st, 2, 2, full_bubble(ids=("c9",)), False, now=60.0)
     assert await voice.maybe_speak(st, 2, 0, full_bubble(level=0), True, now=90.0)  # Fixed it!
     assert st.spoken_ids == set()
+
+
+async def test_speed_setting(api, monkeypatch):
+    monkeypatch.delenv("REIGNS_VOICE_SPEED", raising=False)
+    await voice.synthesize("hello there")
+    assert json.loads(api.calls[-1].content)["voice_settings"]["speed"] == voice.DEFAULT_SPEED
+    monkeypatch.setenv("REIGNS_VOICE_SPEED", "0.1")  # clamped to ElevenLabs' min
+    await voice.synthesize("hello there")  # new speed → new cache entry → new call
+    assert len(api.calls) == 2
+    assert json.loads(api.calls[-1].content)["voice_settings"]["speed"] == 0.7
+    monkeypatch.setenv("REIGNS_VOICE_SPEED", "5")  # clamped to ElevenLabs' max
+    await voice.synthesize("hello there again")
+    assert json.loads(api.calls[-1].content)["voice_settings"]["speed"] == 1.2
+
+
+def test_cowboy_style_lines(monkeypatch):
+    monkeypatch.setenv("REIGNS_VOICE_STYLE", "cowboy")
+    assert voice.line_for(3, 0, bubble(0), True) == "Yeehaw, fixed it, partner!"
+    assert voice.line_for(0, 2, full_bubble(), False).startswith("Whoa there, partner. Heads up")
+    assert "Yeehaw, fixed it, partner!" in voice.COMMON_LINES
+
+
+async def test_full_mode_speaks_a_natural_summary(api, monkeypatch):
+    from app import llm
+
+    seen = {}
+
+    async def fake_complete_text(system, user, **kw):
+        seen["system"], seen["user"], seen["model"] = system, user, kw.get("model")
+        return '"Whoa there, partner. That paper does not exist and the link is busted. **Double-check** it."'
+
+    monkeypatch.setenv("REIGNS_VOICE_STYLE", "cowboy")
+    monkeypatch.setattr(llm, "llm_available", lambda: True)
+    monkeypatch.setattr(llm, "complete_text", fake_complete_text)
+    vp = await voice.maybe_speak(voice.VoiceState(), 0, 2, full_bubble(), False, now=0.0)
+    assert vp.text == "Whoa there, partner. That paper does not exist and the link is busted. Double-check it."
+    assert "cowboy" in seen["system"] and "Problem c1" in seen["user"] and "Problem c2" in seen["user"]
+    assert seen["model"] == llm.fast_model_name()
+    body = json.loads(api.calls[-1].content)
+    assert body["text"] == vp.text and body["voice_settings"]["stability"] == voice.DEFAULT_STABILITY
+
+
+async def test_summary_failure_falls_back_to_reading_the_bubble(api, monkeypatch):
+    from app import llm
+
+    async def boom(*a, **k):
+        raise llm.LLMError("down")
+
+    monkeypatch.setattr(llm, "llm_available", lambda: True)
+    monkeypatch.setattr(llm, "complete_text", boom)
+    vp = await voice.maybe_speak(voice.VoiceState(), 0, 2, full_bubble(), False, now=0.0)
+    assert vp.text == voice.full_line(full_bubble())
+
+
+async def test_failed_audio_does_not_use_up_the_slot(api):
+    api.fail = True
+    st = voice.VoiceState()
+    assert await voice.maybe_speak(st, 0, 3, bubble(3), False, now=0.0) is None
+    api.fail = False
+    assert await voice.maybe_speak(st, 0, 3, bubble(3), False, now=1.0)
+
+
+def test_clip_sentences_keeps_whole_sentences():
+    text = "One two three. Four five six seven. Eight nine."
+    assert voice.clip_sentences(text, 7) == "One two three. Four five six seven."
+    assert voice.clip_sentences(text, 2) == "One two…"  # first sentence alone too long
+
+
+async def test_long_llm_summary_is_trimmed_to_whole_sentences(api, monkeypatch):
+    from app import llm
+
+    async def chatty(*a, **k):
+        return "Whoa there, partner, that paper is made up. " + "This goes on and on. " * 10
+
+    monkeypatch.setattr(llm, "llm_available", lambda: True)
+    monkeypatch.setattr(llm, "complete_text", chatty)
+    vp = await voice.maybe_speak(voice.VoiceState(), 0, 2, full_bubble(), False, now=0.0)
+    assert len(vp.text.split()) <= voice.SUMMARY_MAX_WORDS + 8 and vp.text.endswith(".")
