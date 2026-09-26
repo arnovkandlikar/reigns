@@ -256,3 +256,47 @@ struct VoicePlay: Decodable {
         case audioB64 = "audio_b64"
     }
 }
+
+/// brief.offer payload (Session Brief, Role C/B): the pet offers to paste a context refresh into
+/// Claude's message box. Only sent while the pet is calm (level 0–1).
+struct BriefOffer: Decodable, Equatable {
+    /// "long_chat" | "forgot"
+    var reason: String
+    var headline: String
+    /// Button label, e.g. "Paste a context refresh".
+    var action: String
+    /// The refresh text to paste.
+    var text: String
+    var turns: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case reason, headline, action, text, turns
+    }
+
+    init(reason: String, headline: String, action: String, text: String, turns: Int) {
+        self.reason = reason
+        self.headline = headline
+        self.action = action
+        self.text = text
+        self.turns = turns
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        reason = try c.decodeIfPresent(String.self, forKey: .reason) ?? "long_chat"
+        headline = try c.decode(String.self, forKey: .headline)
+        action = try c.decodeIfPresent(String.self, forKey: .action) ?? "Paste a context refresh"
+        text = try c.decode(String.self, forKey: .text)
+        turns = try c.decodeIfPresent(Int.self, forKey: .turns) ?? 0
+    }
+
+    #if DEBUG
+    /// For the debug menu / demo (no engine needed).
+    static let sample = BriefOffer(
+        reason: "long_chat",
+        headline: "This chat is getting long. Want me to remind Claude what matters so far?",
+        action: "Paste a context refresh",
+        text: "Quick recap before we continue: we're building a Salesforce HR MVP (job openings, candidate pipeline, interviews, onboarding tasks). Decisions so far: custom objects Job_Opening__c, Candidate__c and Interview__c; a Flow creates onboarding tasks on Hired; the React app talks to Salesforce through the MCP server. Please keep these in mind for the next steps.",
+        turns: 24)
+    #endif
+}

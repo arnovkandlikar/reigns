@@ -22,6 +22,10 @@ final class PetViewModel {
     var claims: [ClaimVerdict] = []
     /// FR-A9: Claude's message box already has text; waiting for Replace / Add to it.
     var pendingFix: Correction?
+    /// Session Brief: the pet is offering to paste a context refresh (calm, non-alarming).
+    var briefOffer: BriefOffer?
+    /// The message box already has text; waiting for Replace / Add to it for the refresh.
+    var pendingBrief: BriefOffer?
     /// FR-A9 fallback note shown in the bubble (e.g. "Press ⌘V in Claude").
     var fixNote: String?
     /// A new issue arrived that the user hasn't opened yet (shows the "Click me!" callout).

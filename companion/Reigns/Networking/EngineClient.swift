@@ -20,6 +20,7 @@ final class EngineClient: NSObject {
     var onVerdicts: ((VerdictsUpdate) -> Void)?
     var onVoice: ((VoicePlay) -> Void)?
     var onError: ((EngineError) -> Void)?
+    var onBriefOffer: ((BriefOffer) -> Void)?
 
     private static let backoff: [TimeInterval] = [1, 2, 5]
     private static let maxQueued = 200
@@ -263,6 +264,10 @@ final class EngineClient: NSObject {
                 let error = try decoder.decode(Body<EngineError>.self, from: data).payload
                 Log.net.error("Engine error \(error.code, privacy: .public): \(error.message, privacy: .public)")
                 onError?(error)
+            case "brief.offer":
+                let offer = try decoder.decode(Body<BriefOffer>.self, from: data).payload
+                Log.net.info("brief.offer reason=\(offer.reason, privacy: .public) turns=\(offer.turns)")
+                onBriefOffer?(offer)
             case "voice.play":
                 onVoice?(try decoder.decode(Body<VoicePlay>.self, from: data).payload)
             default:

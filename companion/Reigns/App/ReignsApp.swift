@@ -41,6 +41,7 @@ struct ReignsApp: App {
                 Button("Recovered") { appDelegate.previewRecovered() }
                 Button("Scanning (thinking)") { appDelegate.previewScanning() }
                 Button("Onboarding Window") { appDelegate.showOnboarding() }
+                Button("Context Refresh Offer") { appDelegate.previewBriefOffer() }
                 Toggle("Mock Engine (fixtures)", isOn: Binding(
                     get: { state.isMockEngine },
                     set: { appDelegate.setMockEngine($0) }))

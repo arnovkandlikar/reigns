@@ -83,6 +83,11 @@ Or open `Reigns.xcodeproj` in Xcode and press Run.
       language or character mid-chat sends `session.update` (same session: score, history and bubble
       stay; the engine re-sends the bubble in the new language). `session.start` carries both on
       every (re)connect.
+- [x] Session Brief offer (`brief.offer`): a calm, non-alarming bubble ("Context refresh") with the
+      offer's headline, its action button and Not now. Accepting pastes the refresh into Claude's message
+      box with the Fix it flow (Replace / Add to it, clipboard restored, never presses Enter; no
+      `correction.inserted`). A warning (level ≥ 2) replaces it; heat and animation are unchanged.
+      Debug: Preview Level › Context Refresh Offer.
 
 ## AX tree findings (Day-One Test, PRD §19 Q5)
 
