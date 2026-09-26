@@ -2,7 +2,17 @@
   "claude_bundle_id": "com.anthropic.claudefordesktop",
   "pet_inset_px": 24,
   "window_poll_ms": 250,
-  "message_rules": {
-    "notes": "FR-A3: fill in from the Day-One Test AX dump (user vs assistant rule, input box match). Keep ALL element-matching rules here so a Claude update only needs a config change (PRD R8)."
+  "conversation": {
+    "user_heading_prefix": "You said: ",
+    "assistant_heading_prefix": "Claude responded: ",
+    "article_title_prefix": "Message ",
+    "single_message_container_levels_up": 4,
+    "skip_roles": ["AXButton", "AXToolbar", "AXTextArea", "AXTextField", "AXPopUpButton", "AXCheckBox", "AXMenu"],
+    "skip_subroles": ["AXApplicationStatus"],
+    "skip_dom_id_prefixes": ["mcp-app-"],
+    "skip_dom_id_suffixes": ["-label"],
+    "skip_dom_classes": ["group/artifact-block"],
+    "responding_button_titles": ["Stop response", "Stop generating", "Stop"],
+    "ignored_texts": ["How is Claude doing this session?"]
   }
 }

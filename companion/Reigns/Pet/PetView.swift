@@ -14,6 +14,11 @@ struct PetView: View {
         CGSize(width: baseHorseSize.width * scale, height: baseHorseSize.height * scale)
     }
 
+    /// Height of the visible part of the horse above the floor, in screen points.
+    static func visibleHeight(level: Int) -> CGFloat {
+        baseVisibleHeight(level: level) * scale
+    }
+
     /// How much of the horse (from its ear tips down, in base points) shows above the floor.
     private static func baseVisibleHeight(level: Int) -> CGFloat {
         switch level {

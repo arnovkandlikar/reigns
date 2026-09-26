@@ -20,6 +20,7 @@ struct ReignsApp: App {
                     Button("Level \(level)") { appDelegate.previewLevel(level) }
                 }
             }
+            Button("Log Conversation") { appDelegate.logConversation() }
             #endif
             Divider()
             Button("Quit Reigns") { NSApp.terminate(nil) }

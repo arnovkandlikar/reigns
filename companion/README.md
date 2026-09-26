@@ -35,19 +35,43 @@ Or open `Reigns.xcodeproj` in Xcode and press Run.
 - [x] FR-A1 show/hide with Claude (fade 250 ms)
 - [x] FR-A2 non-activating floating panel, bottom-right inset 24 px, follows window (250 ms poll),
       drag to another corner (remembered)
-- [ ] FR-A3/A4 AX reader · FR-A5 WebSocket · FR-A6/A7 pet levels · FR-A8 bubble · FR-A9 Fix it ·
+- [x] FR-A3 conversation reader (Chat + Code tabs)
+- [x] FR-A8 speech bubble UI (Fix it / Details / I disagree / Dismiss) with sample content;
+      buttons log until FR-A5/FR-A9 land
+- [x] FR-A4 completion detection (`Reigns/AX/ConversationWatcher.swift`): polls every 0.5 s (backs
+      off for slow reads), a message is complete after 1.5 s unchanged and while no Stop control is
+      showing; `message_id` = SHA-1 of `"position:first 200 chars"`, never sent twice. Conversations
+      already on screen are history; a chat that sat empty is reported from message 0. Switches are
+      detected by page title / mismatched messages; old messages scrolling into view are history.
+      Watch it: `log stream --info --predicate 'subsystem == "app.reigns" AND category == "ax"'`
+- [ ] FR-A5 WebSocket · FR-A6/A7 pet levels · FR-A9 Fix it ·
       FR-A10 onboarding · FR-A11 mock mode
 
 ## AX tree findings (Day-One Test, PRD §19 Q5)
 
 - Claude bundle ID: `com.anthropic.claudefordesktop` (tested on Claude 2.9939.2)
 - AX reading: works after setting `AXManualAccessibility = true` on the app element
-- User vs assistant message rule (observed in the Code tab, Claude 2.9939.2 — confirm in a Chat-tab
-  conversation): each message starts with a screen-reader-only `AXHeading` (DOM class `sr-only`)
-  whose title is `"You said: …"` (user) or `"Claude responded: …"` (assistant). User messages are an
-  `AXGroup[AXDocumentArticle]` titled `"Message N"`; an assistant reply can span several sibling
-  `message-row` groups until the next heading. Body text is in descendant `AXStaticText` values.
-  _TODO: encode in `Reigns/Config/AXRules.json`._
+- User vs assistant message rule (FR-A3, implemented in `Reigns/AX/ConversationReader.swift`,
+  strings in `Reigns/Config/AXRules.json` → `conversation`). Verified in both the Chat and Code
+  tabs on Claude 2.9939.2 (text, lists, headings and code blocks come through intact).
+  - Each message starts with a screen-reader-only `AXHeading` titled `"You said: …"` (user) or
+    `"Claude responded: …"` (assistant). Only real headings count, so quoted text can't fake one.
+  - Each message lives in an `AXGroup[AXDocumentArticle]` whose description is `"Message N"`
+    (Code) or `"Message N of M"` (Chat), 1-based → `position = N - 1`. Claude virtualizes the list (only nearby messages are in the
+    tree), so positions come from this label, not from counting.
+  - User text = static text inside its own article. Assistant text = static text from its heading to
+    the next heading (replies continue in sibling rows). A reply still streaming has no heading yet
+    and is ignored.
+  - Only text inside the smallest element containing every heading is read, which keeps the
+    sidebar, composer and footer out. Buttons, toolbars (Copy, timestamps), tool pills and text
+    fields are skipped, plus reply widgets matched by DOM id/class/subrole: visuals
+    (`mcp-app-*`), tool-step summaries (`*-label`, `AXApplicationStatus`) and file cards
+    (`group/artifact-block`).
+  - Code blocks: highlighter tokens inside `AXCodeStyleGroup` are joined verbatim (they carry
+    their own `\n`); everywhere else, directly adjacent text runs mean a line break.
+  - Speed: ~25 ms for the visible window of messages. A long non-virtualized conversation (~200
+    messages) took ~3 s, so FR-A4 must read off the main thread and not too often.
+  - Dev harness: `sh Tools/read_conversation.sh [--full]` prints what the reader extracts.
 - Message input element: `AXTextArea` with DOM classes `tiptap ProseMirror` (the focused composer).
 
 Run the test again: `swift Tools/day_one_test.swift` (read-only) or add `--paste` (never presses
