@@ -427,3 +427,40 @@ async def test_old_cards_get_embedded_when_key_appears(monkeypatch):
     monkeypatch.setattr(memory, "embed_many", fake_many)
     await memory.relevant("local", "requests per minute")
     assert (await memory.list_cards("local"))[0].embedding == [1.0, 0.0]
+
+
+# --------------------------------------------------------------------------- verified memory
+async def test_verified_correction_catches_repeat_in_a_new_chat():
+    """Session hook stored a correction earlier; a later chat repeats the mistake."""
+    await add_card(
+        "local",
+        "correction",
+        "Wikipedia says the Eiffel Tower was completed in 1889, not 1899.",
+        source="claim_verifier",
+    )
+    s = SessionContext(session_id="later")
+    s.messages.append(ChatMessage(message_id="a1", role="assistant", text="x", position=0))
+    judge = judge_says(
+        {
+            "verdict": "contradicts",
+            "memory_index": 0,
+            "confidence": 0.95,
+            "explanation": "Earlier this was verified: it was completed in 1889.",
+        }
+    )
+    det = MemoryConsistency(judge=judge, extract_judge=extractor([]))
+    r = await det.check(claim("The Eiffel Tower was completed in 1899."), s)
+    assert r.status == "contradicted"
+    assert r.evidence[0].source == "Memory (web/Wikipedia)"
+    assert r.evidence[0].snippet.startswith("Corrected earlier:")
+    assert "correction" in judge.calls[0]  # the judge is told the memory's kind
+
+
+async def test_verified_fact_on_other_subject_stays_silent():
+    await add_card(
+        "local", "verified_fact", "The Eiffel Tower was completed in 1889.", source="claim_verifier"
+    )
+    s = SessionContext(session_id="later")
+    s.messages.append(ChatMessage(message_id="a1", role="assistant", text="x", position=0))
+    det = MemoryConsistency(judge=judge_says({"verdict": "unrelated"}), extract_judge=extractor([]))
+    assert await det.check(claim("The Eiffel Tower is 330 metres tall."), s) is None
