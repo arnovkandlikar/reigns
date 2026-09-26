@@ -469,6 +469,13 @@ def main() -> None:
         "mime": "audio/mpeg", "level": 3})
     examples["session.update"] = env("session.update", sid, {"language": "es",
                                                               "character": "marley"})
+    examples["brief.offer"] = env("brief.offer", sid, {
+        "reason": "long_chat",
+        "headline": "Long chat! Want me to refresh Claude's memory of what matters?",
+        "action": "Paste a context refresh",
+        "text": "Quick context refresh before we continue. Please keep this in mind:\n"
+                "Goal: write a literature review on transformer attention.",
+        "turns": 20})
     examples["error"] = env("error", sid, {"code": "invalid_message",
                                            "message": "bad message.new payload: Field required at "
                                                       "['position']"})
