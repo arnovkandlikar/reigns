@@ -168,3 +168,13 @@ def test_snippet_truncates_and_flattens():
     assert snippet("a\n\nb   c") == "a b c"
     long = snippet("x" * 500, limit=50)
     assert len(long) == 50 and long.endswith("…")
+
+
+def test_word_overlap_separates_topic_neighbours():
+    from app.detectors.base import word_overlap
+
+    fake = "HiveFormer: Attention-Based Acoustic Monitoring of Beehives"
+    other = "MUS-Tracker: An IoT Based System in Controlling and Monitoring of Beehives"
+    assert similarity(fake, other) > 0.6  # spelling alone looks close …
+    assert word_overlap(fake, other) < 0.3  # … but they share almost no meaningful words
+    assert word_overlap("Attention Is All You Need", "attention is all you need") == 1.0
