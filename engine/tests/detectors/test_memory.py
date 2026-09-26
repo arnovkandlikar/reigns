@@ -67,7 +67,15 @@ def verdict(claim_id, final, detector, status, conf=0.95, expl="", evidence=True
                 status=status,
                 confidence=conf,
                 explanation=expl or "x",
-                evidence=[Evidence(source="Wikipedia", snippet="s")] if evidence else [],
+                evidence=(
+                    [
+                        Evidence(
+                            source="Wikipedia", snippet="completed in 1889; water boils at 100 C"
+                        )
+                    ]
+                    if evidence
+                    else []
+                ),
             )
         ],
     )
@@ -339,3 +347,55 @@ def test_clean_text_caps_length_and_ends_sentence():
 
 async def test_embed_without_key_is_none():
     assert await memory.embed("anything") is None
+
+
+def test_verified_fact_needs_its_specifics_in_the_evidence():
+    """Live incident: a made-up mayor fact was 'supported' by a snippet about another town."""
+    claims = [
+        claim("m", "The first mayor of Torshavn was Jogvan Poulsen, who took office in 1866."),
+        claim("e", "The Eiffel Tower was completed in 1889."),
+    ]
+    wrong_town = ClaimVerdict(
+        claim_id="m",
+        quote="q",
+        type="fact",
+        risk="high",
+        final="green",
+        detector_results=[
+            DetectorResult(
+                detector="claim_verifier",
+                status="supported",
+                confidence=0.9,
+                explanation="ok",
+                evidence=[
+                    Evidence(
+                        source="Wikipedia",
+                        snippet="Jógvan Poulsen was mayor of Sjóvar municipality.",
+                    )
+                ],
+            )
+        ],
+    )
+    good = ClaimVerdict(
+        claim_id="e",
+        quote="q",
+        type="fact",
+        risk="high",
+        final="green",
+        detector_results=[
+            DetectorResult(
+                detector="claim_verifier",
+                status="supported",
+                confidence=0.95,
+                explanation="ok",
+                evidence=[
+                    Evidence(
+                        source="Wikipedia",
+                        snippet="the Eiffel Tower, completed in 1889, has inspired",
+                    )
+                ],
+            )
+        ],
+    )
+    cards = cards_from_verdicts(claims, [wrong_town, good])
+    assert [c["text"] for c in cards] == ["The Eiffel Tower was completed in 1889."]
