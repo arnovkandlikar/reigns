@@ -19,6 +19,25 @@ CONTEXT_CHARS = 1000
 SOURCE_DOC_MIN_CHARS = 1500  # FR-B11
 SOURCE_INTENT = re.compile(r"\b(summari[sz]e|summary|explain|according to|tl;?dr)\b", re.I)
 
+# Hedges / self-talk that must never become claims (they'd come back amber and keep heat high
+# right after a successful fix). Matched against the start of the quote.
+HEDGE = re.compile(
+    r"^\W*(?:(?:yes|no|ok(?:ay)?|sure|well|actually|honestly|good catch)[,!.]?\s+)?"
+    r"(?:you'?re (?:right|correct)\b"
+    r"|(?:i'?m|i am)\s+(?:not\s+(?:sure|confident|certain|aware)|unsure|uncertain)\b"
+    r"|i\s+(?:don'?t|do not)\s+(?:know|have|think i)\b"
+    r"|i\s+(?:can'?t|cannot|couldn'?t|could not)\s+(?:verify|confirm|find|be sure)\b"
+    r"|i\s+(?:apologi[sz]e|shouldn'?t have|should not have|was wrong|made (?:a |an )?(?:mistake|error))"
+    r"|(?:sorry|my apologies|apologies)\b"
+    r"|(?:it'?s|it is)\s+(?:possible|unclear)\s+(?:that\s+)?(?:i|my)\b)",
+    re.I,
+)
+
+
+def is_hedge(quote: str) -> bool:
+    return bool(HEDGE.match(quote.strip()))
+
+
 CODE_BLOCK = re.compile(r"```(\w+)?[ \t]*\n(.*?)```", re.DOTALL)
 URL = re.compile(r"https?://[^\s)\]>\"']+")
 PIP = re.compile(r"\b(?:pip|pip3)\s+install\s+([A-Za-z0-9_.\-]+)")
@@ -38,6 +57,10 @@ Rules:
 - Each cited paper, URL and software package is its own claim (type paper/url/package).
 - risk high = specific numbers, dates, names, citations, package names; low = general
   explanations, opinions, advice. Skip greetings and filler entirely.
+- Skip the assistant's statements about its OWN knowledge or earlier answer: uncertainty
+  ("I'm not confident those papers exist", "I don't know of any work on X"), apologies,
+  self-corrections, and refusals. They are honest hedges, not checkable claims. If such a
+  sentence also names a specific paper, URL or package, extract only that reference.
 - Do not extract claims from inside code blocks."""
 
 
@@ -115,6 +138,8 @@ def _heuristic_claims(text: str, message_id: str, context: str) -> list[Claim]:
         s = sentence.strip()
         if len(s) < 20 or any(s.rstrip(".!?") in q or q in s for q in seen):
             continue
+        if is_hedge(s):
+            continue
         if re.search(r"\d", s):
             add(s, "number")
         elif re.search(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", s[1:]):
@@ -172,6 +197,7 @@ async def extract_claims(session: SessionContext, message_id: str, text: str) ->
     if not prose_claims:
         prose_claims = _heuristic_claims(text, message_id, context)
 
+    prose_claims = [c for c in prose_claims if not is_hedge(c.quote)]
     claims = (claims + prose_claims)[:MAX_CLAIMS]
     tag_source_summary(session, message_id, claims)
     return claims
