@@ -41,6 +41,7 @@ from app.detectors.base import (
     normalize_text,
     snippet,
 )
+from app.detectors import experience
 from app.detectors.claim_gate import gate
 from app.llm import complete_json
 from app.models import Claim, DetectorResult, Evidence, SessionContext
@@ -102,6 +103,9 @@ Rules:
   contradictions. Different years, names or clearly different numbers ARE.
 - "explanation" is one short plain-English sentence for a non-expert, e.g.
   "Wikipedia says it was completed in 1889, not 1899."
+- You may also get PAST CONFIRMED CASES: similar claims checked before. They show how
+  evidence was read in the past; they are NOT evidence for this claim. Never quote them and
+  never base the verdict on them alone.
 
 Return {"verdict": "supported|contradicted|unverified|not_checkable", "confidence": 0.0-1.0,
         "evidence_index": <int or null>, "quote": "<verbatim or empty>",
@@ -118,8 +122,11 @@ class ClaimVerifier(BaseDetector):
         transport: httpx.AsyncBaseTransport | None = None,
         judge: JudgeFn | None = None,
         gate_judge: JudgeFn | None = None,
+        experience_fn: Callable[[str, str], Awaitable[list]] | None = None,
     ) -> None:
         self.gate_judge = gate_judge  # tests inject the Claim Gate's model
+        # FR-L3: similar confirmed past cases (Atlas Vector Search); tests inject a fake.
+        self.experience_fn = experience_fn or experience.similar_cases
         # Both injectable so tests run offline with canned search results and judge answers.
         self.transport = transport
         self.judge: JudgeFn = judge or complete_json
@@ -137,16 +144,37 @@ class ClaimVerifier(BaseDetector):
         claim = g.resolved(claim)  # context-resolved, standalone text (long-chat root cause)
         query = (claim.normalized or claim.quote).strip()[:300]  # privacy: claim text only
 
-        snippets = await self.cached(
-            session, f"evidence:{normalize_text(query)}", lambda: self._gather(query)
-        )
+        # FR-L3: look up similar past cases WHILE searching, so it adds no latency.
+        past = asyncio.ensure_future(self._past_cases(query, claim.type))
+        try:
+            snippets = await self.cached(
+                session, f"evidence:{normalize_text(query)}", lambda: self._gather(query)
+            )
+        except BaseException:
+            past.cancel()
+            raise
         if not snippets:
+            past.cancel()
             return self.result("unverified", 0.5, "No sources found that confirm or deny this.")
 
+        examples = await past
         verdict = await self.cached(
-            session, f"judge:{normalize_text(query)}", lambda: self._judge(claim, snippets)
+            session,
+            f"judge:{normalize_text(query)}",
+            lambda: self._judge(claim, snippets, examples),
         )
         return self._to_result(verdict, snippets)
+
+    async def _past_cases(self, query: str, claim_type: str) -> str:
+        """Experience memory block for the judge ("" when Atlas is off or nothing is similar)."""
+        try:
+            cases = await self.experience_fn(query, claim_type)
+            if cases:
+                log.info("claim_verifier: %d similar past case(s) for the judge", len(cases))
+            return experience.examples_block(cases)
+        except Exception as exc:  # noqa: BLE001 (FR-L3: skip silently)
+            log.info("claim_verifier: experience lookup failed: %r", exc)
+            return ""
 
     async def _gather(self, query: str) -> list[Snippet]:
         """Search + Wikipedia in parallel. Returns [] only if every source came back empty."""
@@ -264,7 +292,9 @@ class ClaimVerifier(BaseDetector):
         return [sn for p in parts if isinstance(p, list) for sn in p]
 
     # ------------------------------------------------------------------ judge
-    async def _judge(self, claim: Claim, snippets: list[Snippet]) -> dict[str, Any]:
+    async def _judge(
+        self, claim: Claim, snippets: list[Snippet], examples: str = ""
+    ) -> dict[str, Any]:
         numbered = "\n\n".join(
             f"[{i}] ({s.source}) {s.text[:SNIPPET_CHARS]}" for i, s in enumerate(snippets)
         )
@@ -272,6 +302,8 @@ class ClaimVerifier(BaseDetector):
         if claim.quote and claim.quote != claim.normalized:
             user += f"(original wording: {claim.quote[:300]})\n"
         user += f"\nEVIDENCE SNIPPETS:\n{numbered}"
+        if examples:
+            user += f"\n\n{examples}"
         data = await self.judge(JUDGE_SYSTEM, user)
         if not isinstance(data, dict):
             raise TypeError(f"judge returned {type(data).__name__}, expected an object")
