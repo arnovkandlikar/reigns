@@ -77,6 +77,140 @@ async def test_level_zero_has_no_correction(summary_session: SessionContext) -> 
     assert bubble.correction is None
 
 
+async def test_unverified_red_bubble_uses_cautious_claim_copy() -> None:
+    quote = "The Eiffel Tower was completed in 1899."
+    claim = Claim(
+        claim_id="unverified-1",
+        message_id="answer-1",
+        quote=quote,
+        normalized=quote,
+        type="fact",
+        risk="high",
+    )
+    verdict = ClaimVerdict(
+        claim_id=claim.claim_id,
+        quote=quote,
+        type=claim.type,
+        risk=claim.risk,
+        final="red",
+        detector_results=[
+            DetectorResult(
+                detector="claim_verifier",
+                status="unverified",
+                confidence=0.9,
+                explanation="None of the snippets mention a completion date, so it can't be confirmed or denied.",
+            ),
+            DetectorResult(
+                detector="consistency_probe",
+                status="likely_hallucination",
+                confidence=0.9,
+                explanation="The sampled answers disagreed.",
+            ),
+        ],
+    )
+    session = SessionContext(
+        session_id="unverified-copy",
+        claims={claim.claim_id: claim},
+        verdicts={claim.claim_id: verdict},
+    )
+    profile = DriftProfile(failures=[claim.claim_id], root_causes=["knowledge_gap"])
+
+    bubble = await api.build_bubble(4, profile, session)
+
+    assert bubble.headline == "I couldn't confirm this claim."
+    assert bubble.confidence_label == "Not sure"
+    assert bubble.problems[0].text == f"{quote} I could not verify this."
+    assert "snippets" not in bubble.problems[0].text
+    assert "confident guess" not in bubble.pattern_text
+
+
+async def test_mixed_evidence_bubble_limits_confidence_to_fairly_sure() -> None:
+    quotes = ["The tower opened in 1899.", "The tower is 330 metres tall."]
+    claims = {
+        str(index): Claim(
+            claim_id=str(index),
+            message_id="answer-1",
+            quote=quote,
+            normalized=quote,
+            type="fact",
+            risk="high",
+        )
+        for index, quote in enumerate(quotes)
+    }
+    verdicts = {
+        "0": ClaimVerdict(
+            claim_id="0",
+            quote=quotes[0],
+            type="fact",
+            risk="high",
+            final="red",
+            detector_results=[
+                DetectorResult(
+                    detector="claim_verifier",
+                    status="contradicted",
+                    confidence=0.95,
+                    evidence=[Evidence(source="Wikipedia", snippet="Opened in 1889")],
+                    explanation="The date is contradicted.",
+                )
+            ],
+        ),
+        "1": ClaimVerdict(
+            claim_id="1",
+            quote=quotes[1],
+            type="fact",
+            risk="high",
+            final="amber",
+            detector_results=[
+                DetectorResult(
+                    detector="claim_verifier",
+                    status="unverified",
+                    confidence=0.5,
+                    explanation="Could not confirm the height.",
+                )
+            ],
+        ),
+    }
+    session = SessionContext(session_id="mixed-copy", claims=claims, verdicts=verdicts)
+    profile = DriftProfile(failures=["0", "1"], root_causes=["knowledge_gap"])
+
+    bubble = await api.build_bubble(3, profile, session)
+
+    assert bubble.headline == "Some claims have clear issues; others need checking."
+    assert bubble.confidence_label == "Fairly sure"
+    assert bubble.problems[0].text == f"{quotes[0]} Evidence conflicts with this."
+    assert bubble.problems[1].text == f"{quotes[1]} I could not verify this."
+
+
+def test_long_problem_copy_ends_at_a_complete_sentence() -> None:
+    quote = (
+        "The report says the new transit network will open next year and carry millions of "
+        "passengers every day across several cities, even though its planning document is "
+        "still unfinished and no funding has been approved."
+    )
+    verdict = ClaimVerdict(
+        claim_id="long-1",
+        quote=quote,
+        type="fact",
+        risk="high",
+        final="amber",
+        detector_results=[
+            DetectorResult(
+                detector="claim_verifier",
+                status="unverified",
+                confidence=0.5,
+                explanation="No result verifies this, so it can't be confirmed or denied.",
+            )
+        ],
+    )
+
+    text = api._problem_text(verdict)
+
+    assert len(text) <= 120
+    assert text.endswith(".")
+    assert "…" not in text
+    assert "can't be confirmed" not in text
+
+
 async def test_disagreed_verdict_is_excluded_from_diagnosis(
     summary_session: SessionContext,
 ) -> None:

@@ -36,7 +36,7 @@ _MATCH_SCORE = re.compile(r"\s*\(best (?:title )?match \d+(?:\.\d+)?\)", re.IGNO
 _CAUSE_COPY: dict[str, tuple[str, str, str]] = {
     "knowledge_gap": (
         "knowledge_gap",
-        "It is filling a knowledge gap with a confident guess.",
+        "A claim does not line up with the available evidence.",
         "Recheck the uncertain claim and mark anything the evidence cannot settle.",
     ),
     "anchored_wrong_assumption": (
@@ -278,11 +278,70 @@ def _clip(text: str, limit: int) -> str:
     return flat[: limit - 1].rstrip() + "…"
 
 
-def _problem_text(verdict: ClaimVerdict) -> str:
-    result = _result_for(verdict)
-    if result:
-        return _clip(result.explanation, 120)
-    return _clip(f'Could not verify: "{verdict.quote}"', 120)
+def _direct_issue(verdict: ClaimVerdict) -> bool:
+    """A check can support confident copy without treating uncertainty as proof."""
+    return any(
+        result.confidence >= 0.8
+        and (
+            (result.status == "contradicted" and bool(result.evidence))
+            or result.status in ("nonexistent_api", "caved_without_evidence")
+        )
+        for result in verdict.detector_results
+    )
+
+
+def _source_absence(verdict: ClaimVerdict) -> bool:
+    return any(
+        result.status == "not_in_source" and result.confidence >= 0.8
+        for result in verdict.detector_results
+    )
+
+
+def _problem_text(verdict: ClaimVerdict, claim: Claim | None = None) -> str:
+    """Show Claude's claim and a plain reason, never a clipped detector note."""
+    statuses = {result.status for result in verdict.detector_results}
+    if any(
+        result.status == "contradicted" and result.evidence for result in verdict.detector_results
+    ):
+        reason = "Evidence conflicts with this."
+    elif "nonexistent_api" in statuses:
+        reason = "The library does not provide that API."
+    elif "caved_without_evidence" in statuses:
+        reason = "Claude changed its answer without new evidence."
+    elif _source_absence(verdict):
+        reason = "The source does not support this."
+    elif "not_in_source" in statuses:
+        reason = "I could not find this in the source."
+    else:
+        reason = "I could not verify this."
+
+    candidates = [verdict.quote]
+    if claim and claim.normalized != verdict.quote:
+        candidates.append(claim.normalized)
+    sentences = []
+    for text in candidates:
+        flat = " ".join(text.split()).strip()
+        if flat:
+            sentences.append(flat if re.search(r"[.!?][\"']?$", flat) else f"{flat}.")
+    for sentence in sentences:
+        with_reason = f"{sentence} {reason}"
+        if len(with_reason) <= 120:
+            return with_reason
+    for sentence in sentences:
+        if len(sentence) <= 120:
+            return sentence
+        first = re.split(r"(?<=[.!?])\s+(?=[A-Z])", sentence, maxsplit=1)[0]
+        if first != sentence and 30 <= len(first) <= 120:
+            return first
+
+    return {
+        "paper": "Claude cited a paper that needs checking. Open Details for the full citation.",
+        "source_summary": "A detail in Claude's summary needs checking against the document. See Details.",
+        "code_api": "Claude used an API that needs checking. Open Details for the exact call.",
+    }.get(
+        verdict.type,
+        "A longer claim from Claude needs checking. Open Details for its full wording.",
+    )
 
 
 def _evidence_url(verdict: ClaimVerdict) -> str | None:
@@ -415,10 +474,30 @@ async def build_bubble(level: int, profile: DriftProfile, session: SessionContex
     if not flagged:
         flagged = _flagged(session)
 
+    visible = flagged[:3]
+    direct_count = sum(_direct_issue(v) for v in visible)
+    source_absence = any(_source_absence(v) for v in visible)
+    substantiated = bool(direct_count or source_absence)
     causes = profile.root_causes
     pattern, _redo = _pattern(causes)
     if level == 1 and flagged:
-        headline = "Hmm, I couldn't confirm this claim."
+        headline = (
+            "I found a claim worth rechecking."
+            if substantiated
+            else "I couldn't confirm this claim."
+        )
+    elif level >= 2 and visible and not substantiated:
+        headline = (
+            "I couldn't confirm this claim."
+            if len(visible) == 1
+            else "I couldn't confirm these claims."
+        )
+    elif level >= 2 and direct_count and direct_count < len(visible):
+        headline = "Some claims have clear issues; others need checking."
+    elif level >= 2 and source_absence and not all(_source_absence(v) for v in visible):
+        headline = "Some details lack support; others need checking."
+    elif level >= 2 and direct_count and causes and causes[0] == "knowledge_gap":
+        headline = "Some claims conflict with the evidence."
     elif level >= 2 and causes:
         headline = {
             "fabricated_sources": "Heads up: a cited source could not be confirmed.",
@@ -436,32 +515,24 @@ async def build_bubble(level: int, profile: DriftProfile, session: SessionContex
     problems = [
         BubbleProblem(
             claim_id=verdict.claim_id,
-            text=_problem_text(verdict),
+            text=_problem_text(verdict, session.claims.get(verdict.claim_id)),
             evidence_url=_evidence_url(verdict),
         )
-        for verdict in flagged[:3]
+        for verdict in visible
     ]
 
-    any_red = any(verdict.final == "red" for verdict in flagged)
-    top = flagged[0] if flagged else None
-    top_result = _result_for(top) if top else None
-    has_direct_evidence = bool(top_result and top_result.evidence)
-    if (
-        any_red
-        and has_direct_evidence
-        and top_result.status not in ("not_in_source", "unverified", "uncertain")
-        and top_result.confidence >= 0.8
-    ):
+    if visible and direct_count == len(visible):
         confidence_label = "Very sure"
-        confidence_reason = _clip(
-            f"Evidence from {top_result.evidence[0].source} supports this flag.", 200
-        )
-    elif any_red:
+        confidence_reason = "Each problem has a direct check behind it."
+    elif direct_count:
         confidence_label = "Fairly sure"
-        confidence_reason = "The verdict is concerning, but direct evidence is limited."
-    elif flagged:
+        confidence_reason = "Some problems have direct support; others still need checking."
+    elif source_absence:
+        confidence_label = "Fairly sure"
+        confidence_reason = "The supplied document does not support at least one detail."
+    elif visible:
         confidence_label = "Not sure"
-        confidence_reason = "The available checks could not verify every claim."
+        confidence_reason = "The checks could not confirm or rule out these claims."
     else:
         confidence_label = ""
         confidence_reason = ""
@@ -485,11 +556,17 @@ async def build_bubble(level: int, profile: DriftProfile, session: SessionContex
         3: "I wrote a prompt to recheck the linked issues.",
         4: "Consider starting a fresh chat with this handoff.",
     }[level]
+    if not visible:
+        pattern_text = ""
+    elif substantiated:
+        pattern_text = pattern
+    else:
+        pattern_text = "The checks did not establish whether these claims are correct."
     return BubbleContent(
         level=level,
         headline=headline,
         problems=problems,
-        pattern_text=_clip(pattern if flagged else "", 200),
+        pattern_text=_clip(pattern_text, 200),
         confidence_label=confidence_label,
         confidence_reason=confidence_reason,
         action_text=action,
