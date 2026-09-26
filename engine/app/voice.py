@@ -107,6 +107,38 @@ PRAISE_LINES = {
         "No problems found.", "Good answer.", "Checked it, all accurate.", "Nothing wrong there.",
     ],
 }
+# Spanish (REIGNS_LANGUAGE=es or session.start language "es"). ElevenLabs' flash v2.5 model
+# speaks Spanish with the same voice.
+OPENERS_ES = {
+    "cowboy": [
+        "¡Epa, compañero!", "Aguanta los caballos.", "Tranquilo, amigo.", "Uy, uy, uy.",
+        "Espérate tantito.", "Ojo, vaquero.", "A ver, a ver.", "Frena un segundo.", "Híjole.",
+        "No tan rápido, amigo.", "Detente ahí, compadre.", "Mira nada más.",
+    ],
+    "plain": [
+        "Atención.", "Un momento.", "Ojo.", "Espera.", "Cuidado aquí.", "Una cosa:",
+        "Fíjate en esto.", "Aguarda un segundo.",
+    ],
+}
+PRAISE_LINES_ES = {
+    "cowboy": [
+        "Esa está bien, compañero.", "Limpiecito, sin trampa.", "Todo en orden por aquí.",
+        "Eso es cierto, amigo.", "Respuesta derechita.", "Revisado y bien firme.",
+        "Buen trabajo, Claude.", "Ni una falla. ¡Bien!", "Camino despejado.",
+        "Así se hace, vaquero.", "Todo cuadra, compadre.", "Bien dicho, amigo.",
+    ],
+    "plain": [
+        "Todo correcto.", "Se ve bien.", "Verificado, bien.", "Sin problemas.",
+        "Buena respuesta.", "Nada que corregir.", "Revisado, todo exacto.", "Todo en orden.",
+    ],
+}
+OPENERS_BY_LANG = {"en": OPENERS, "es": OPENERS_ES}
+PRAISE_BY_LANG = {"en": PRAISE_LINES, "es": PRAISE_LINES_ES}
+RECOVERED = {
+    ("en", "cowboy"): "Yeehaw, fixed it, partner!", ("en", "plain"): "Fixed it!",
+    ("es", "cowboy"): "¡Yija! Arreglado, compañero.", ("es", "plain"): "¡Arreglado!",
+}
+LANGUAGES = ("en", "es")
 PRAISE_GAP_S = 45.0  # praise at most this often, so it stays nice instead of naggy
 
 _transport: Optional[httpx.AsyncBaseTransport] = None  # tests inject a MockTransport
@@ -157,6 +189,12 @@ def style() -> str:
     return st if st in ("cowboy", "plain") else "cowboy"
 
 
+def language(lang: Optional[str] = None) -> str:
+    """'en' or 'es': the session's choice, else REIGNS_LANGUAGE, else English."""
+    v = (lang or os.environ.get("REIGNS_LANGUAGE") or "en").strip().lower()[:2]
+    return v if v in LANGUAGES else "en"
+
+
 def praise_enabled() -> bool:
     return (os.environ.get("REIGNS_VOICE_PRAISE") or "1").strip() not in ("0", "false", "off", "no")
 
@@ -170,16 +208,16 @@ def _pick(options: list[str], recent: Optional[deque] = None) -> str:
     return choice
 
 
-def pick_opener(recent: Optional[deque] = None) -> str:
-    return _pick(OPENERS[style()], recent)
+def pick_opener(recent: Optional[deque] = None, lang: Optional[str] = None) -> str:
+    return _pick(OPENERS_BY_LANG[language(lang)][style()], recent)
 
 
-def pick_praise(recent: Optional[deque] = None) -> str:
-    return _pick(PRAISE_LINES[style()], recent)
+def pick_praise(recent: Optional[deque] = None, lang: Optional[str] = None) -> str:
+    return _pick(PRAISE_BY_LANG[language(lang)][style()], recent)
 
 
-def recovered_line() -> str:
-    return "Yeehaw, fixed it, partner!" if style() == "cowboy" else "Fixed it!"
+def recovered_line(lang: Optional[str] = None) -> str:
+    return RECOVERED[(language(lang), style())]
 
 
 def clip_words(text: str, n: int = MAX_WORDS) -> str:
@@ -220,9 +258,10 @@ def line_for(
     recovered: bool,
     spoken_ids: Optional[set[str]] = None,
     opener: Optional[str] = None,
+    lang: Optional[str] = None,
 ) -> Optional[str]:
     if recovered:
-        return recovered_line()
+        return recovered_line(lang)
     if mode() == "short":
         if level >= 3 and level > prev_level and bubble.headline:
             return clip_words(bubble.headline)
@@ -234,7 +273,8 @@ def line_for(
     if _new_problem_ids(bubble, spoken_ids or set()) or rose_to_alarm:
         text = full_line(bubble)
         if style() == "cowboy":
-            return clip_sentences(f"{opener or OPENERS['cowboy'][0]} {text}", FULL_MAX_WORDS)
+            first = opener or OPENERS_BY_LANG[language(lang)]["cowboy"][0]
+            return clip_sentences(f"{first} {text}", FULL_MAX_WORDS)
         return text
     return None
 
@@ -284,7 +324,16 @@ def _clean_spoken(text: str) -> str:
     return clip_sentences(text, SUMMARY_HARD_CAP)
 
 
-async def summarize(bubble: BubbleContent, opener: Optional[str] = None) -> Optional[str]:
+_SPANISH = (
+    " Speak in natural Latin American Spanish, even though the notes are in English (translate "
+    "them; keep names, numbers and titles exact). For the cowboy style, use Spanish folksy words "
+    "like 'compañero', 'amigo' or 'híjole' now and then instead of English ones."
+)
+
+
+async def summarize(
+    bubble: BubbleContent, opener: Optional[str] = None, lang: Optional[str] = None
+) -> Optional[str]:
     """Natural spoken summary of the whole bubble via the fast model. None if unavailable/slow."""
     try:
         from app import llm
@@ -294,6 +343,7 @@ async def summarize(bubble: BubbleContent, opener: Optional[str] = None) -> Opti
             llm.complete_text(
                 _SUMMARY_SYSTEM[style()],
                 _SUMMARY_RULES.format(n=SUMMARY_MAX_WORDS)
+                + (_SPANISH if language(lang) == "es" else "")
                 + (f' Start with exactly these words: "{opener}"' if opener else "")
                 + "\n\n" + _summary_input(bubble),
                 max_tokens=300,
@@ -346,13 +396,22 @@ async def synthesize(text: str) -> Optional[bytes]:
     return resp.content
 
 
+def warm_lines() -> list[str]:
+    """Lines pre-generated at startup: common warnings + this style's praise and "fixed it"
+    in every language, so switching to Spanish is instant too."""
+    lines = list(COMMON_LINES)
+    for lang in LANGUAGES:
+        lines += PRAISE_BY_LANG[lang][style()] + [RECOVERED[(lang, style())]]
+    return list(dict.fromkeys(lines))
+
+
 async def warm_cache() -> None:
     """Pre-generate COMMON_LINES in the background at startup (FR-V2). Never raises."""
     if not enabled():
         log.info("voice disabled (no ELEVENLABS_API_KEY / REIGNS_VOICE_ID)")
         return
     made = 0
-    for line in COMMON_LINES + PRAISE_LINES[style()]:
+    for line in warm_lines():
         try:
             if not _cache_path(line).exists() and await synthesize(line):
                 made += 1
@@ -381,17 +440,20 @@ async def maybe_speak(
     recovered: bool,
     now: Optional[float] = None,
     clean: bool = False,
+    lang: Optional[str] = None,
 ) -> Optional[VoicePlay]:
     """`clean`: this reply was checked (≥ 1 claim) and nothing in it was red or amber."""
     if not enabled():
         return None
     now = time.monotonic() if now is None else now
-    opener = pick_opener(state.recent_openers) if style() == "cowboy" or mode() == "full" else None
-    text = line_for(prev_level, level, bubble, recovered, state.spoken_ids, opener)
+    lang = language(lang)
+    opener = (pick_opener(state.recent_openers, lang)
+              if style() == "cowboy" or mode() == "full" else None)
+    text = line_for(prev_level, level, bubble, recovered, state.spoken_ids, opener, lang)
     praising = False
     if (not text and clean and praise_enabled() and not recovered
             and now - state.last_praise >= PRAISE_GAP_S):
-        text, praising = pick_praise(state.recent_praise), True
+        text, praising = pick_praise(state.recent_praise, lang), True
     if not text or now - state.last_spoken < MIN_GAP_S:
         return None
     prev_spoken, state.last_spoken = state.last_spoken, now  # hold the slot while we work
@@ -399,7 +461,7 @@ async def maybe_speak(
         state.last_praise = now
         log.info("voice: praising a clean reply")
     elif mode() == "full" and not recovered:
-        summary = await summarize(bubble, opener)
+        summary = await summarize(bubble, opener, lang)
         log.info("voice: speaking %s (%d words)", "summary" if summary else "bubble text",
                  len((summary or text).split()))
         text = summary or text

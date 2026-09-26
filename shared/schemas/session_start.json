@@ -30,6 +30,18 @@
       "default": "1.0",
       "title": "Companion Version",
       "type": "string"
+    },
+    "language": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Language"
     }
   },
   "title": "SessionStart",

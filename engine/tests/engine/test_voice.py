@@ -76,7 +76,8 @@ async def test_off_without_keys(monkeypatch):
 
 
 async def test_warm_cache_generates_common_lines(api):
-    n = len(voice.COMMON_LINES) + len(voice.PRAISE_LINES["plain"])
+    n = len(voice.warm_lines())
+    assert "¡Arreglado!" in voice.warm_lines() and "Sin problemas." in voice.warm_lines()
     await voice.warm_cache()
     assert len(api.calls) == n
     await voice.warm_cache()  # second time: all cached
@@ -256,3 +257,35 @@ async def test_clean_reply_gets_praise_but_not_too_often(api, monkeypatch):
     assert await voice.maybe_speak(voice.VoiceState(), 0, 0, calm, False, now=0.0) is None  # not checked
     monkeypatch.setenv("REIGNS_VOICE_PRAISE", "0")
     assert await voice.maybe_speak(voice.VoiceState(), 0, 0, calm, False, now=0.0, clean=True) is None
+
+
+async def test_spanish_session_speaks_spanish(api, monkeypatch):
+    from app import llm
+
+    seen = {}
+
+    async def fake(system, user, **kw):
+        seen["user"] = user
+        return "¡Epa, compañero! Claude inventó un artículo y un enlace roto, así que revísalos."
+
+    monkeypatch.setenv("REIGNS_VOICE_STYLE", "cowboy")
+    monkeypatch.setattr(llm, "llm_available", lambda: True)
+    monkeypatch.setattr(llm, "complete_text", fake)
+    st = voice.VoiceState()
+    vp = await voice.maybe_speak(st, 0, 2, full_bubble(), False, now=0.0, lang="es")
+    assert "Latin American Spanish" in seen["user"]
+    assert st.recent_openers[-1] in voice.OPENERS_ES["cowboy"]
+    assert vp.text.startswith("¡Epa")
+    fix = await voice.maybe_speak(voice.VoiceState(), 2, 0, full_bubble(level=0), True, now=0.0, lang="es")
+    assert fix.text == "¡Yija! Arreglado, compañero."
+    calm = BubbleContent(level=0, headline="Todo bien")
+    praise = await voice.maybe_speak(voice.VoiceState(), 0, 0, calm, False, now=0.0, clean=True, lang="es")
+    assert praise.text in voice.PRAISE_LINES_ES["cowboy"]
+
+
+def test_language_defaults_and_env(monkeypatch):
+    monkeypatch.delenv("REIGNS_LANGUAGE", raising=False)
+    assert voice.language(None) == "en" and voice.language("fr") == "en"
+    assert voice.language("es") == "es" and voice.language("ES-mx") == "es"
+    monkeypatch.setenv("REIGNS_LANGUAGE", "es")
+    assert voice.language(None) == "es"

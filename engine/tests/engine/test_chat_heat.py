@@ -92,3 +92,19 @@ async def test_old_database_gets_heat_column(tmp_path):
     await ledger.close()
     async with aiosqlite.connect(path) as db:
         assert await (await db.execute("SELECT heat FROM messages")).fetchall() == [(40,)]
+
+
+async def test_session_start_language(tmp_path):
+    ledger = Ledger(str(tmp_path / "t.db"))
+    await ledger.open()
+    try:
+        s = Session("s", ledger)
+        p = SessionStart(language="es")
+        await s.handle(envelope("session.start", s.sid, p), p)
+        assert s.ctx.language == "es"
+        s2 = Session("s2", ledger)
+        p2 = SessionStart()
+        await s2.handle(envelope("session.start", s2.sid, p2), p2)
+        assert s2.ctx.language == "en"
+    finally:
+        await ledger.close()
