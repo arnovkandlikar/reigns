@@ -247,11 +247,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Menu › Character: Charlie or Marley. Remembered across launches; same voice for both.
+    /// Menu › Character: Charlie or Marley. Remembered across launches; each has its own voice.
     func setCharacter(_ character: PetCharacter) {
         guard character != pet.model.character else { return }
         PetCharacter.saved = character
         state.character = character
+        engine.setCharacter(character)  // her own voice and personality (engine)
         // 1) the current character sinks out of view, 2) swap while hidden, 3) the new one rises.
         withAnimation(.easeIn(duration: 0.25)) {
             pet.model.isCharacterHidden = true

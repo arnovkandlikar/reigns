@@ -77,8 +77,8 @@ Or open `Reigns.xcodeproj` in Xcode and press Run.
 - [x] "Click me!" callout above the pet when there's an issue the user hasn't opened yet
 - [x] Bubble voice controls: replay the last spoken line, mute/unmute (same setting as the menu)
 - [x] Characters (menu › Character): **Charlie** (default horse) or **Marley** (a unicorn: golden spiral horn, pastel rainbow mane, sparkles, pearly white coat at Calm/Recovered,
-      eyelashes, rosy cheeks). Shared expressions, level colours, accessories and
-      voice; remembered across launches (`Reigns/Pet/PetCharacter.swift`).
+      eyelashes, rosy cheeks). Shared expressions, level colours and accessories;
+      Marley has her own engine voice (`"character": "charlie"|"marley"` in `session.start`); remembered across launches (`Reigns/Pet/PetCharacter.swift`).
 - [x] Language (menu › Language): English or Español. Español sends `"language": "es"` in
       `session.start` (English sends nothing, the engine's default, so older engines still accept it);
       switching restarts the engine session with the current chat key, so it applies at once and the

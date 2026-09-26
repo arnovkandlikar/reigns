@@ -1,7 +1,7 @@
 import Foundation
 
-/// Which horse the pet is. Both share every expression, colour and accessory; Marley adds a
-/// feminine look (eyelashes, flowing mane, bow, rosy cheeks). Same voice for now.
+/// Which pet is on screen. Both share every expression, level colour and accessory. Marley is a
+/// unicorn (horn, rainbow mane, sparkles) with her own engine voice and personality.
 enum PetCharacter: String, CaseIterable, Identifiable {
     case charlie, marley
 
@@ -12,6 +12,11 @@ enum PetCharacter: String, CaseIterable, Identifiable {
         case .charlie: return "Charlie"
         case .marley: return "Marley"
         }
+    }
+
+    /// Value for session.start "character" (picks the engine voice and personality).
+    var wireCode: String {
+        rawValue  // "charlie" or "marley"
     }
 
     private static let defaultsKey = "petCharacter"
