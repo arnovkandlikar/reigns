@@ -583,6 +583,8 @@ async def build_bubble(level: int, profile: DriftProfile, session: SessionContex
     level = max(0, min(4, int(level)))
     flagged = _flagged(session)
     visible = flagged
+    if not visible:
+        level = 0
     direct_count = sum(_direct_issue(v) for v in visible)
     source_absence = any(_source_absence(v, session) for v in visible)
     substantiated = bool(direct_count or source_absence)

@@ -136,3 +136,16 @@ def test_handoff_uses_last_real_user_message_after_two_reign_handoffs() -> None:
 
     assert "- Original question: Give me 3 false statements\n" in prompt
     assert "- Original question: Start a fresh chat" not in prompt
+
+
+async def test_no_flagged_claims_means_no_fresh_start_handoff() -> None:
+    session = SessionContext(session_id="false-statements")
+    session.messages.append(ChatMessage(
+        message_id="user-original", role="user", text="Give me 3 false statements", position=0,
+    ))
+
+    bubble = await api.build_bubble(4, DriftProfile(), session)
+
+    assert bubble.level == 0
+    assert bubble.correction is None
+    assert bubble.action_text == ""
