@@ -224,6 +224,46 @@ def parse_url(claim: Claim) -> str | None:
     return None
 
 
+_DOI = re.compile(r"\b(10\.\d{4,9}/[^\s?#\"'<>]+)", re.IGNORECASE)
+DOI_HANDLE_URL = "https://doi.org/api/handles/{doi}"
+
+
+# The companion reads the Claude window with no space between a link and the sentence after it
+# ("https://doi.org/10.2307/1414040This was the first…"). QA (demo run): six real DOIs went red
+# as 404s because of the glued word. A capitalized word stuck onto a digit or a lowercase letter
+# at the very end of a link is the next sentence, not part of the address.
+_GLUED_WORD = re.compile(r"(?<=[0-9a-z/])([A-Z][a-z]+)$")
+
+
+def unglued(url: str) -> str | None:
+    """The link without a word glued onto its end, or None if nothing looks glued."""
+    m = _GLUED_WORD.search(url)
+    return url[: m.start()] if m else None
+
+
+def doi_in(url: str) -> str | None:
+    """The DOI inside a doi.org / publisher link ("https://doi.org/10.1242/jeb.068718")."""
+    m = _DOI.search(url)
+    if not m:
+        return None
+    doi = m.group(1).rstrip(".,;:)]")
+    # DOIs end in a digit or an identifier, never in a digit + capitalized English word.
+    g = re.search(r"(?<=\d)[A-Z][a-z]+$", doi)
+    return doi[: g.start()] if g else doi
+
+
+def citation_context(session: SessionContext, claim: Claim, doi: str) -> str:
+    """The text of the reply just before the DOI on the same paragraph (the citation it belongs
+    to), so the DOI's real title can be compared with the paper the reply attached it to."""
+    msg = session.message(claim.message_id) if session else None
+    text = getattr(msg, "text", "") or ""
+    at = text.lower().find(doi.lower())
+    if at < 0:
+        return ""
+    start = max(text.rfind("\n\n", 0, at), text.rfind("\n", 0, at))
+    return text[start + 1 : at][-600:]
+
+
 def attributed_text(claim: Claim, url: str) -> str | None:
     """A quoted passage the reply says the page contains (≥ 12 chars), if any (FR-C1)."""
     rest = claim.quote.replace(url, " ")
@@ -826,7 +866,19 @@ class ReferenceAuditor(BaseDetector):
         if not host or _is_private_host(host):
             return self.result("unverified", 0.3, "Local or private link — not checked.")
 
+        doi = doi_in(url)
+        if doi:
+            by_doi = await self._check_doi(doi, claim, session)
+            if by_doi is not None:
+                return by_doi
+
         page = await self.cached(session, f"url:{url}", lambda: self._fetch(url))
+        trimmed = unglued(url)
+        if trimmed and page.get("kind") == "http" and page.get("status") in (404, 410):
+            # Maybe the next sentence got glued on: try the link without it.
+            retry = await self.cached(session, f"url:{trimmed}", lambda: self._fetch(trimmed))
+            if retry.get("kind") == "http" and retry.get("status", 404) < 400:
+                url, page = trimmed, retry
         ev_url = page.get("final_url") or url
 
         if page["kind"] == "dns":
@@ -851,7 +903,12 @@ class ReferenceAuditor(BaseDetector):
                 f"The link returns {status} Not Found — the page doesn't exist.",
                 [Evidence(source="HTTP", url=ev_url, snippet=f"HTTP {status}")],
             )
-        if status >= 400:  # 401/403/429/5xx: bot blocking or outages, not proof of fakeness
+        if status in (401, 403):
+            # QA (demo run): real journal pages (ACS, Company of Biologists) answer bots with
+            # 403, and every correct DOI link went amber. A refusal proves the page exists
+            # more than it proves anything wrong → say nothing.
+            return None
+        if status >= 400:  # 429/5xx: rate limits or outages, not proof of fakeness
             return self.result(
                 "unverified",
                 0.4,
@@ -873,6 +930,77 @@ class ReferenceAuditor(BaseDetector):
             "The link works" + (" and the page contains the quoted text." if passage else "."),
             [Evidence(source="HTTP", url=ev_url, snippet=f"HTTP {status}")],
         )
+
+    async def _check_doi(
+        self, doi: str, claim: Claim, session: SessionContext
+    ) -> DetectorResult | None:
+        """Look a DOI up in the registries instead of fetching the publisher page.
+
+        Crossref knows most journal DOIs (and their titles); doi.org's handle API knows every DOI
+        (DataCite, arXiv …). Real DOI whose title matches the cited paper → green; real DOI whose
+        title is a different paper → red (the classic made-up citation); no such DOI → red.
+        None = registries unreachable → fall back to fetching the link."""
+        link = f"https://doi.org/{doi}"
+        try:
+            record = await self.cached(session, f"doi:{doi.lower()}", lambda: self._crossref_doi(doi))
+        except httpx.HTTPError:
+            return None
+        if record is None:
+            try:
+                exists = await self.cached(
+                    session, f"doi-handle:{doi.lower()}", lambda: self._doi_registered(doi)
+                )
+            except httpx.HTTPError:
+                return None
+            if not exists:
+                return self.result(
+                    "contradicted",
+                    0.92,
+                    f"The DOI {doi} doesn't exist: neither doi.org nor Crossref knows it.",
+                    [Evidence(source="doi.org", url=link, snippet=f"DOI {doi} not registered")],
+                )
+            return self.result(
+                "supported", 0.8, f"The DOI {doi} is registered.",
+                [Evidence(source="doi.org", url=link, snippet=f"DOI {doi} is registered")],
+            )
+        cite = Evidence(source="Crossref", url=link, snippet=snippet(self._cite(record)))
+        context = citation_context(session, claim, doi)
+        cited = content_words(context)
+        real = content_words(record.title)
+        if real and len(cited) >= 8:
+            overlap = len(real & cited) / len(real)
+            if overlap < 0.25 and not (
+                record.surnames and any(normalize_text(n) in normalize_text(context)
+                                        for n in record.surnames[:3])
+            ):
+                return self.result(
+                    "contradicted",
+                    0.85,
+                    f'The DOI {doi} is real, but it belongs to a different paper: '
+                    f'"{snippet(record.title, 110)}".',
+                    [cite],
+                )
+        return self.result(
+            "supported", 0.9, f'The DOI is real: "{snippet(record.title, 110)}".', [cite]
+        )
+
+    async def _crossref_doi(self, doi: str) -> Candidate | None:
+        try:
+            resp = await self._api_get("crossref", f"{CROSSREF_URL}/{urlquote(doi, safe='/')}")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        items = _crossref_candidates({"message": {"items": [resp.json().get("message", {})]}})
+        return items[0] if items else None
+
+    async def _doi_registered(self, doi: str) -> bool:
+        async with self._client() as client:
+            resp = await client.get(DOI_HANDLE_URL.format(doi=urlquote(doi, safe="/")))
+        if resp.status_code == 404:
+            return False
+        resp.raise_for_status()
+        return resp.json().get("responseCode") == 1
 
     async def _fetch(self, url: str) -> dict[str, Any]:
         """GET the page (5 s timeout, redirects followed). Returns a cacheable dict."""

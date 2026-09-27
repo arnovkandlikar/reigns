@@ -194,6 +194,9 @@ Rules:
 - The TASK itself is not a memory: "write a CLI that runs or stops a job", "summarize this",
   "make it faster" → nothing. Keep only facts/rules that would still matter for FUTURE
   requests (setup, versions, limits, budgets, deadlines, standing preferences).
+- How THIS request should be answered is part of the task, not a memory: "in one line",
+  "no tools", "using only requests.get", "in 3 bullets", "without searching" → nothing.
+  (But "our API allows 100 requests a minute" or "I'm stuck on Python 3.8" ARE memories.)
 - Each card: one standalone sentence, at most 20 words, understandable without the chat.
 - "subject": 2–5 lowercase words naming WHAT the fact is about ("api rate limit",
   "pandas version") — used to replace old cards when the user changes a fact.

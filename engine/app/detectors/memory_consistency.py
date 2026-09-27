@@ -65,6 +65,8 @@ Rules:
   adds "and returns None") is consistent.
 - Same SCOPE required: a figure for a different route, endpoint, period or version ("Tokyo to
   Shin-Osaka" vs "Tokyo to Kyoto") is unrelated, not a contradiction.
+- Explaining that a user's request or rule CAN'T be met, correcting the user, or warning
+  them ("requests.get has no retry option; you need a Session") is NOT a contradiction.
 - Talking ABOUT something is not violating it ("pandas 2.0 added X" is not a contradiction of
   "user is on pandas 1.5" — but CODE that requires 2.0 for a 1.5 user is).
 - "explanation": one short sentence for the user. Start with "You told Claude …" for user
@@ -367,10 +369,23 @@ class MemoryConsistency(BaseDetector):
         # and corrections are about the WORLD, so they only apply to world-fact claims about the
         # SAME subject; the user's own rules apply to advice and code too.
         hits = await memory.relevant(uid, text, k=RECALL_K)
+        # A statement about the world can't "break" a user's RULE; only code and advice can.
+        # QA (demo run): the user asked for retries "using only requests.get", Claude correctly
+        # said that's impossible and explained HTTPAdapter, and the true explanation went red as
+        # "you told Claude to use only requests.get". Rules apply to code/advice; world facts are
+        # checked against the user's FACTS and against verified facts only.
+        # Hard numbers ("500 requests per minute" vs a 100/min limit) are still always checked.
+        # Only the model gate can tell "flights cost $1,000" (world fact) from "I set it to 500
+        # per minute" (Claude's own plan); the keyword fallback keeps every rule in play.
+        rules_apply = bool(claim.code) or g.kind != "world_fact" or g.source != "llm"
         cards = [
             c for c, _ in hits
             if c.kind in USER_KINDS
-            or (g.kind in ("world_fact", "unknown") and same_subject(c, claim, g.subject))
+            or (
+                c.kind not in USER_KINDS
+                and g.kind in ("world_fact", "unknown")
+                and same_subject(c, claim, g.subject)
+            )
         ]
         if claim.code:
             # Code rarely shares words with "Uses Python 3.8" or "on pandas 1.5", so similarity
@@ -381,7 +396,11 @@ class MemoryConsistency(BaseDetector):
 
         # a/b: deterministic checks first — no LLM, instant.
         for card in cards:
-            why = number_violation(card, text) or python_violation(card, claim.code)
+            # A world fact ("flights to Tokyo cost about $1,000") can't break a user's budget;
+            # only a plan, advice or code can. Heuristic-gate claims ("unknown") stay checked.
+            why = (number_violation(card, text) if rules_apply else None) or python_violation(
+                card, claim.code
+            )
             if why:
                 return self.result("contradicted", 0.93, why, [self._evidence(card)])
 
@@ -397,7 +416,11 @@ class MemoryConsistency(BaseDetector):
                 ):
                     return None
 
-        # c: judge.
+        # c: judge. A world fact is judged against facts, never against the user's rules.
+        if not rules_apply:
+            cards = [c for c in cards if c.kind != "constraint"]
+            if not cards:
+                return None
         data = await self.cached(
             session, f"judge:{claim.claim_id}", lambda: self._judge(claim, cards)
         )

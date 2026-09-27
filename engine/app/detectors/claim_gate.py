@@ -169,10 +169,23 @@ def reported_then_rejected(session: SessionContext, claim: Claim) -> bool:
     return bool(_REJECTION.search(after) or _REJECTION.search(claim.quote))
 
 
-def requested_untrue(session: SessionContext, claim: Claim) -> bool:
-    """Did the user's message right before this reply ask for false/made-up content?"""
+def demo_catch_requested() -> bool:
+    """REIGNS_DEMO_CATCH_REQUESTED=1: DEMO ONLY. Treat false content the user asked for
+    ("give me 3 false statements") as if Claude asserted it, so a demo can show the pet catching
+    lies on cue. Off by default: in real use, flagging lies you asked for is a false alarm."""
+    return os.environ.get("REIGNS_DEMO_CATCH_REQUESTED") == "1"
+
+
+def _asked_for_untrue(session: SessionContext, claim: Claim) -> bool:
     user = session.previous(claim.message_id, "user")
     return bool(user and _REQUEST_UNTRUE.search(user.text.strip()[:400]))
+
+
+def requested_untrue(session: SessionContext, claim: Claim) -> bool:
+    """Did the user's message right before this reply ask for false/made-up content?"""
+    if demo_catch_requested():
+        return False
+    return _asked_for_untrue(session, claim)
 
 
 def heuristic(claim: Claim, session: SessionContext | None = None) -> GateResult:
@@ -260,10 +273,20 @@ async def gate(claim: Claim, session: SessionContext, judge: Any = None) -> Gate
         session.cache[key] = task
     try:
         # shield: one detector timing out must not cancel the call the others are awaiting
-        return await asyncio.shield(task)
+        result = await asyncio.shield(task)
     except (LLMError, TypeError, ValueError) as exc:
         log.warning("claim gate failed for %s, using heuristic: %s", claim.claim_id, exc)
-        return heuristic(claim, session)
+        result = heuristic(claim, session)
+    if (
+        result.kind == "not_asserted"
+        and demo_catch_requested()
+        and _asked_for_untrue(session, claim)
+    ):
+        # Demo mode: the lie the user asked for is checked like any other fact. Myths that the
+        # reply itself rejects ("some say X, but that's false") still stay unflagged above.
+        return GateResult(result.standalone, "world_fact", result.subject, result.question,
+                          result.source)
+    return result
 
 
 def peek(session: SessionContext, claim_id: str) -> GateResult | None:
