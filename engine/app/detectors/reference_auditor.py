@@ -25,6 +25,7 @@ import os
 import re
 import weakref
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote as urlquote
 from urllib.parse import urlencode, urlparse
@@ -54,6 +55,7 @@ YEAR_TOLERANCE = 1  # FR-C1: year ±1 (preprint vs. journal year)
 # Title + authors match but the record is LATER than the cited year (re-registrations, later
 # editions, journal versions of old preprints) → still the real paper, slightly less sure.
 MAX_LATER_RECORD_YEARS = 10
+RECENT_RECORD_YEARS = 3  # a record this new for an older citation looks like a re-registration
 SEARCH_ROWS = 5  # FR-C1: rows=5
 
 # Rate limits: Crossref and Semantic Scholar both return 429 when one reply cites several
@@ -61,6 +63,13 @@ SEARCH_ROWS = 5  # FR-C1: rows=5
 # still run in parallel with each other), and a 429 is retried once after Retry-After
 # (capped so we stay inside the engine's 12 s detector budget).
 MAX_RETRY_WAIT_S = 2.0
+# How many requests may run at once per API. Crossref (polite pool) and OpenAlex allow ~10/s;
+# Semantic Scholar's public pool is ~1/s. QA: a reply citing 5 papers queued 10 OpenAlex calls
+# one by one and the whole check timed out at 12 s, leaving every citation unchecked.
+API_CONCURRENCY = {"crossref": 3, "openalex": 3, "s2": 1}
+# Per-paper time budget. The engine gives a detector 12 s for ALL of a reply's claims, so a
+# paper decides with the databases that answered by then instead of waiting for the slowest.
+PAPER_BUDGET_S = 8.0
 
 CROSSREF_URL = "https://api.crossref.org/works"
 S2_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
@@ -279,10 +288,14 @@ def _openalex_candidates(data: dict[str, Any]) -> list[Candidate]:
 _LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
+def _this_year() -> int:
+    return datetime.now(timezone.utc).year
+
+
 def _api_lock(api: str) -> asyncio.Semaphore:
     per_loop = _LOCKS.setdefault(asyncio.get_running_loop(), {})
     if api not in per_loop:
-        per_loop[api] = asyncio.Semaphore(1)
+        per_loop[api] = asyncio.Semaphore(API_CONCURRENCY.get(api, 1))
     return per_loop[api]
 
 
@@ -344,12 +357,27 @@ class ReferenceAuditor(BaseDetector):
             "Semantic Scholar": self.cached(session, f"s2:{key}", lambda: self._search_s2(ref)),
             "OpenAlex": self.cached(session, f"openalex:{key}", lambda: self._search_openalex(ref)),
         }
-        results = await asyncio.gather(*searches.values(), return_exceptions=True)
-        answered: dict[str, list[Candidate]] = {
-            name: res for name, res in zip(searches, results) if not isinstance(res, BaseException)
-        }
+        tasks = {name: asyncio.ensure_future(coro) for name, coro in searches.items()}
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + PAPER_BUDGET_S
+        pending = set(tasks.values())
+        while pending:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            _, pending = await asyncio.wait(
+                pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED
+            )
+            if self._full_match(ref, self._answered(tasks)):
+                break  # one database already confirms the paper: don't wait for the rest
+        # Slow searches keep running in the background and fill the cache for later claims.
+        answered = self._answered(tasks)
+        still_waiting = [name for name, t in tasks.items() if not t.done()]
         if not answered:
-            raise ConnectionError(f"all paper databases unavailable ({results[0]!r})")
+            if still_waiting:
+                return self.result("unverified", 0.3, "The paper databases didn't answer in time.")
+            errors = [t.exception() for t in tasks.values() if not t.cancelled()]
+            raise ConnectionError(f"all paper databases unavailable ({errors[0]!r})")
 
         candidates = [c for cands in answered.values() for c in cands]
         scored = sorted(
@@ -379,10 +407,17 @@ class ReferenceAuditor(BaseDetector):
             for score, c in scored
             if score >= TITLE_MATCH and ref.surnames and self._authors_ok(ref, c) and c.year
         ]
+        # Re-registrations are RECENT records of OLD papers (Crossref and OpenAlex list the
+        # 2017 transformer paper as 2025). A citation that predates records which are
+        # themselves old is just a wrong year: QA found BERT cited as "2015" passing because
+        # every record said 2019. So only accept "later record" when all matching records are
+        # recent.
+        recent = _this_year() - RECENT_RECORD_YEARS
         if (
             matching
             and ref.year is not None
             and all(0 < c.year - ref.year <= MAX_LATER_RECORD_YEARS for c in matching)
+            and all(c.year >= recent for c in matching)
         ):
             c = min(matching, key=lambda m: m.year)
             return self.result(
@@ -419,7 +454,16 @@ class ReferenceAuditor(BaseDetector):
                 [Evidence(source=best.source, url=best.url, snippet=snippet(self._cite(best)))],
             )
 
-        # 4) Every source that answered found nothing close → no such paper.
+        # 4) Every source that answered found nothing close → no such paper. Only say so when
+        #    at least two databases answered, or none is still pending: a real arXiv-only paper
+        #    can be missing from Crossref while the slower OpenAlex would have found it.
+        if still_waiting and len(answered) < 2:
+            return self.result(
+                "unverified",
+                0.5,
+                f"No match in {_join_or(list(answered))} yet; "
+                + f"{_join_or(still_waiting)} didn't answer in time.",
+            )
         evidence = [self._not_found_evidence(src, ref, cands) for src, cands in answered.items()]
         # More independent databases agreeing "no such paper" → more confident.
         confidence = {1: 0.85, 2: 0.92}.get(len(answered), 0.95)
@@ -430,6 +474,23 @@ class ReferenceAuditor(BaseDetector):
             + _join_or(list(answered))
             + ".",
             evidence,
+        )
+
+    @staticmethod
+    def _answered(tasks: dict[str, asyncio.Future]) -> dict[str, list[Candidate]]:
+        out = {}
+        for name, t in tasks.items():
+            if t.done() and not t.cancelled() and t.exception() is None:
+                out[name] = t.result()
+        return out
+
+    def _full_match(self, ref: PaperRef, answered: dict[str, list[Candidate]]) -> bool:
+        return any(
+            similarity(ref.title, c.title) >= TITLE_MATCH
+            and self._authors_ok(ref, c)
+            and self._year_ok(ref, c)
+            for cands in answered.values()
+            for c in cands
         )
 
     @staticmethod

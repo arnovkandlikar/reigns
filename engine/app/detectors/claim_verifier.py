@@ -355,6 +355,16 @@ class ClaimVerifier(BaseDetector):
             source = snippets[0]
             quote = snippet(source.text, 200)
 
+        if verdict == "contradicted" and rounding_only(claim_text, quote):
+            # QA: a rounding-level "contradiction" (8,849 m vs 8,848.86 m) was stored as a
+            # correction and later turned a correct claim red. The source gives the same
+            # number up to rounding, so it SUPPORTS the claim.
+            return self.result(
+                "supported",
+                0.75,
+                "Matches the sources (the small difference is rounding).",
+                [Evidence(source=source.source, url=source.url, snippet=snippet(quote))],
+            )
         if verdict == "contradicted" and not _comparable_numbers(claim_text, quote):
             # Live bug: "Water boils at 50°C" was marked contradicted by "Average sea-level
             # pressure is 1,013.25 hPa". A numeric claim needs a quote with a number of the
@@ -543,6 +553,33 @@ def _number_kinds(text: str) -> set[str]:
     if _YEAR.search(text):
         kinds.add("year")
     return kinds
+
+
+_PLAIN_NUMBER = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
+ROUNDING = 0.005  # 0.5 %: "8,849 m" vs "8,848.86 m", "330 m" vs "330.0 m"
+
+
+def _values(text: str) -> list[float]:
+    out = []
+    for raw in _PLAIN_NUMBER.findall(text):
+        try:
+            out.append(float(raw.replace(",", "")))
+        except ValueError:
+            continue
+    return out
+
+
+def rounding_only(claim_text: str, quote: str) -> bool:
+    """True when every number in the claim has a match within 0.5 % in the quote, so any
+    "contradiction" is just rounding or survey precision (8,849 vs 8,848.86). Years never
+    round: 1899 vs 1889 is a real difference."""
+    claim_vals = [v for v in _values(claim_text) if not (1000 <= v <= 2099 and v.is_integer())]
+    if not claim_vals or _YEAR.search(claim_text) and len(claim_vals) < len(_values(claim_text)):
+        return False
+    quote_vals = _values(quote)
+    return all(
+        any(abs(q - c) <= ROUNDING * max(abs(c), 1.0) for q in quote_vals) for c in claim_vals
+    )
 
 
 def _comparable_numbers(claim_text: str, quote: str) -> bool:

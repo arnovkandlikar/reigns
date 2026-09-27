@@ -506,8 +506,9 @@ async def test_429_twice_falls_back_to_other_source(session, monkeypatch):
     assert r.status == "contradicted"  # Crossref alone still decides → red, not skipped
 
 
-async def test_calls_to_each_api_are_serialized(load_scenario, session):
-    """4 papers checked in parallel (like the engine does) → never 2 Crossref calls at once."""
+async def test_calls_to_each_api_are_rate_limited(load_scenario, session):
+    """4 papers checked in parallel (like the engine does) → each API stays within its own
+    concurrency limit (Semantic Scholar: one at a time; Crossref/OpenAlex: a few)."""
     import asyncio
 
     in_flight = {"api.crossref.org": 0, "api.semanticscholar.org": 0, "api.openalex.org": 0}
@@ -527,7 +528,11 @@ async def test_calls_to_each_api_are_serialized(load_scenario, session):
     results = await asyncio.gather(
         *(a.check(c, SessionContext(session_id=str(i))) for i, c in enumerate(claims))
     )
-    assert peak == {"api.crossref.org": 1, "api.semanticscholar.org": 1, "api.openalex.org": 1}
+    from app.detectors.reference_auditor import API_CONCURRENCY
+
+    assert peak["api.semanticscholar.org"] == 1
+    assert 1 <= peak["api.crossref.org"] <= API_CONCURRENCY["crossref"]
+    assert 1 <= peak["api.openalex.org"] <= API_CONCURRENCY["openalex"]
     assert [r.status for r in results].count("contradicted") == 3
     assert [r.status for r in results].count("supported") == 1  # → 3 red + 1 green
 

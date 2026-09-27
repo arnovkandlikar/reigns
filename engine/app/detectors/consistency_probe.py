@@ -56,7 +56,8 @@ Return {"question": "..."} or {"question": null}."""
 GROUP_SYSTEM = """You compare short answers to the same question and group them by MEANING.
 Two answers are in the same group if they give the same specific answer, even if worded
 differently ("Jógvan Poulsen" = "It was J. Poulsen"). Different names, numbers or dates are
-different groups.
+different groups, but numbers that differ only by rounding or precision are the SAME answer
+("8,849 m" = "8,848.86 m", "about 330 m" = "330 metres").
 
 You also get ORIGINAL, the answer a chatbot gave earlier. Say which group (by index) has the
 same meaning as ORIGINAL, or null if none does.
@@ -216,6 +217,7 @@ class ConsistencyProbe(BaseDetector):
         groups = clean_groups(verdict.get("groups"), len(answers))
         og = verdict.get("original_group")
         original_group = og if isinstance(og, int) and 0 <= og < len(groups) else None
+        original_group = _rounding_match(claim.normalized, answers, groups, original_group)
         return {
             "question": question,
             "answers": answers,
@@ -315,6 +317,26 @@ class ConsistencyProbe(BaseDetector):
             f"Asked {n} times, Claude's answers were mixed ({len(groups)} different answers).",
             evidence,
         )
+
+
+def _rounding_match(
+    original: str, answers: list[str], groups: list[list[int]], original_group: int | None
+) -> int | None:
+    """QA (F7): the original said 8,849 m, the samples said 8,848.86 m, and the grouping model
+    called them different → "likely hallucination" on a correct claim. If the biggest group
+    that agrees with the original up to rounding is bigger than the one the model picked, use
+    it."""
+    from app.detectors.claim_verifier import rounding_only  # local: avoid an import cycle
+
+    best = original_group
+    for i, g in sorted(enumerate(groups), key=lambda t: -len(t[1])):
+        if not g:
+            continue
+        if best is not None and len(groups[best]) >= len(g):
+            break
+        if rounding_only(original, answers[g[0]]):
+            return i
+    return best
 
 
 detector = ConsistencyProbe()
