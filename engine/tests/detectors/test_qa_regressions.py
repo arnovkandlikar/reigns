@@ -689,3 +689,358 @@ async def test_a_correction_with_no_conflicting_verified_fact_is_still_stored(le
     )
     stored = await ledger.on_verdicts(SessionContext(session_id="s"), [c], [v])
     assert [x.kind for x in stored] == ["correction"]
+
+
+# ------------------------------------------------------------------ Part C: judge wraps its JSON
+def test_one_object_unwraps_a_list():
+    from app.detectors.base import one_object
+
+    assert one_object({"verdict": "supported"}) == {"verdict": "supported"}
+    assert one_object([{"verdict": "supported"}]) == {"verdict": "supported"}
+    assert one_object([]) is None and one_object("x") is None and one_object([1, 2]) is None
+
+
+async def test_verifier_reads_a_verdict_wrapped_in_a_list(monkeypatch):
+    """C1: "Earth orbits the Sun about once every 365.25 days" → claim_verifier error
+    "judge returned list, expected an object", silently dropping the web check."""
+    monkeypatch.setenv("TAVILY_API_KEY", "t")
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+    text = "Earth orbits the Sun once every 365.25 days."
+
+    def web(req):
+        if req.url.host == "api.tavily.com":
+            return httpx.Response(200, json={"results": [
+                {"url": "https://en.wikipedia.org/wiki/Year", "content": text}]})
+        return httpx.Response(200, json={"query": {"search": []}})
+
+    async def judge(system, user, **kw):
+        return [{"verdict": "supported", "confidence": 0.95, "evidence_index": 0,
+                 "quote": text, "explanation": "Wikipedia says 365.25 days."}]
+
+    v = ClaimVerifier(transport=httpx.MockTransport(web), judge=judge)
+    r = await v.check(
+        Claim(claim_id="c", message_id="m", quote=text, normalized=text, type="fact",
+              risk="high"),
+        SessionContext(session_id="s"),
+    )
+    assert r.status == "supported"
+
+
+# ------------------------------------------------------------------ Part C, C7: probe on bundles
+PY_BUNDLE = (
+    "Python borrowed design elements from C, Unix, Modula-3, and ABC; some of these barely "
+    "existed in 1980."
+)
+
+
+@pytest.mark.parametrize(
+    "text,vague",
+    [
+        (PY_BUNDLE, True),
+        ("Many of these languages barely survived the 1990s.", True),
+        ("Flask was first released in 2010; Django was first released in 2005.", True),
+        ("The Eiffel Tower was completed in 1889.", False),
+        ("Typical home computers in 1980 had 8-bit CPUs and 16–64 KB of RAM.", True),
+        ("Around 1984–87, machines grew to have 256 KB–1 MB of RAM.", True),
+        ("ABC, a predecessor to Python, was built at CWI in the early 1980s.", True),
+        ("The Eiffel Tower is about 330 metres tall.", False),
+        ("The Ming dynasty ruled from 1368–1644.", False),
+        ("Perl was released in 1987 and Tcl was released in 1988.", False),
+    ],
+)
+def test_probe_skips_bundled_or_hedged_claims(text, vague):
+    from app.detectors.consistency_probe import too_vague_to_probe
+
+    assert too_vague_to_probe(text) is vague
+
+
+def test_a_shorter_answer_contained_in_the_claim_agrees_with_it():
+    from app.detectors.consistency_probe import _contained_match
+
+    five = [[0, 1, 2, 3, 4]]
+    assert _contained_match(PY_BUNDLE, ["C and Unix."] * 5, five, None) == 0
+    # a genuinely different answer is still a mismatch
+    assert _contained_match("The Eiffel Tower was completed in 1899.", ["1889"] * 5, five, None) is None
+    # a long answer can't sneak in by sharing words
+    long = "Python drew on C and Unix and also on many other languages from the 1980s and 1990s"
+    assert _contained_match(PY_BUNDLE, [long] * 5, five, None) is None
+
+
+async def test_probe_does_not_sample_a_bundled_claim():
+    from app.detectors.consistency_probe import ConsistencyProbe
+
+    async def never(*a, **k):
+        raise AssertionError("must not sample")
+
+    async def gate_judge(system, user, **kw):
+        return {"standalone": PY_BUNDLE, "kind": "world_fact", "subject": "python influences",
+                "question": "Which languages influenced Python?"}
+
+    p = ConsistencyProbe(sampler=never, judge=never, gate_judge=gate_judge)
+    c = Claim(claim_id="c", message_id="m", quote=PY_BUNDLE, normalized=PY_BUNDLE, type="fact",
+              risk="high")
+    assert await p.check(c, SessionContext(session_id="s")) is None
+
+
+# ------------------------------------------------------------------ Part C, C7: quoted phrases
+def _paper(quote: str, normalized: str) -> Claim:
+    return Claim(claim_id="c", message_id="m", quote=quote, normalized=normalized, type="paper",
+                 risk="high")
+
+
+def test_a_quoted_phrase_in_prose_is_not_a_citation():
+    from app.detectors.reference_auditor import looks_like_citation, parse_paper
+
+    glue = _paper('Scripting and Unix: Perl (1987) filled the "glue language" gap that shell '
+                  "and awk left", "The paper 'glue language' exists.")
+    assert not looks_like_citation(glue, parse_paper(glue))
+    deep = _paper('LeCun, Bengio & Hinton (2015), "Deep learning", Nature',
+                  "The paper 'Deep learning' exists.")
+    assert looks_like_citation(deep, parse_paper(deep))
+    bert = _paper(f'Devlin et al. (2019), "{BERT_TITLE}"', f"The paper '{BERT_TITLE}' exists.")
+    assert looks_like_citation(bert, parse_paper(bert))
+
+
+async def test_auditor_stays_silent_on_a_quoted_phrase():
+    def boom(req):
+        raise AssertionError("no lookup expected")
+
+    ra = ReferenceAuditor(transport=httpx.MockTransport(boom))
+    glue = _paper('Perl (1987) filled the "glue language" gap', "The paper 'glue language' exists.")
+    assert await ra.check(glue, SessionContext(session_id="s")) is None
+
+
+# ------------------------------------------------------------------ Part B, B1.1: failed databases
+TINYML = "A Survey of TinyML Applications in Beekeeping for Hive Monitoring and Management"
+
+
+def _only_crossref_answers(openalex_status: int = 500):
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "api.crossref.org":
+            return httpx.Response(200, json={"message": {"items": []}})
+        if req.url.host == "api.openalex.org":
+            if openalex_status == 200:
+                return httpx.Response(200, json={"results": []})
+            return httpx.Response(openalex_status)
+        if req.url.host == "api.semanticscholar.org":
+            return httpx.Response(429)
+        return httpx.Response(404)
+
+    return handler
+
+
+async def test_one_database_alone_cannot_call_a_paper_fake():
+    """S2 rate-limited, OpenAlex errored, Crossref (no arXiv preprints) found nothing → the real
+    arXiv survey went red. Now: amber, and it says which databases couldn't be searched."""
+    ra = ReferenceAuditor(transport=httpx.MockTransport(_only_crossref_answers()))
+    c = paper_claim(f'Sucipto, Zhou, Kwon and Chen (2025), "{TINYML}", arXiv.')
+    r = await ra.check(c, SessionContext(session_id="s"))
+    assert r.status == "unverified"
+    assert "couldn't be searched" in r.explanation
+
+
+async def test_two_databases_finding_nothing_still_means_fake():
+    ra = ReferenceAuditor(transport=httpx.MockTransport(_only_crossref_answers(200)))
+    c = paper_claim(f'Sucipto, Zhou, Kwon and Chen (2025), "{TINYML}", arXiv.')
+    r = await ra.check(c, SessionContext(session_id="s"))
+    assert r.status == "contradicted"
+
+
+# ------------------------------------------------------------------ Part B: shorthand mentions
+def test_shorthand_mentions_are_parsed_as_authors_year_and_a_nickname():
+    from app.detectors.reference_auditor import parse_paper
+
+    ref = parse_paper(_paper("Giovannesi et al. (2025) Vit4V", "There is a paper … Vit4V."))
+    assert (ref.title, ref.surnames, ref.year, ref.quoted) == ("Vit4V", ["Giovannesi"], 2025, False)
+    ref = parse_paper(_paper("Lee & Park (2022) honeybee transformers", "x"))
+    assert ref.surnames == ["Lee", "Park"] and not ref.quoted
+    ref = parse_paper(_paper(f'Devlin et al. (2019), "{BERT_TITLE}"', "x"))
+    assert ref.quoted and ref.title == BERT_TITLE
+
+
+async def test_a_shorthand_mention_is_never_called_fake():
+    """My QA summary said "Sucipto et al. (2025) TinyML survey (arXiv)" → red "no paper titled
+    'Sucipto et al. (2025) TinyML survey (arXiv)'". Nothing found by a nickname proves nothing."""
+    ra = ReferenceAuditor(transport=httpx.MockTransport(_only_crossref_answers(200)))
+    c = _paper("Sucipto et al. (2025) TinyML survey (arXiv)",
+               "There is a paper by Sucipto et al. from 2025 titled TinyML survey on arXiv.")
+    assert await ra.check(c, SessionContext(session_id="s")) is None
+
+
+async def test_a_shorthand_mention_can_still_be_confirmed():
+    def handler(req):
+        if req.url.host == "api.crossref.org":
+            item = {"DOI": "10.1/x", "title": [TINYML], "issued": {"date-parts": [[2025]]},
+                    "author": [{"given": "W.", "family": "Sucipto"}]}
+            return httpx.Response(200, json={"message": {"items": [item]}})
+        return httpx.Response(429)
+
+    ra = ReferenceAuditor(transport=httpx.MockTransport(handler))
+    c = _paper("Sucipto et al. (2025) TinyML survey (arXiv)", "x")
+    r = await ra.check(c, SessionContext(session_id="s"))
+    assert r is not None and r.status == "supported"
+
+
+# ------------------------------------------------------------------ Part B: OpenAlex 503 / key
+async def test_openalex_retries_a_503_and_sends_the_api_key(monkeypatch):
+    from app.detectors import reference_auditor as rmod
+
+    monkeypatch.setattr(rmod, "RETRY_5XX_S", 0)
+    monkeypatch.setenv("OPENALEX_API_KEY", "oa-key")
+    seen = {"n": 0, "keys": set()}
+
+    def handler(req):
+        if req.url.host == "api.openalex.org":
+            seen["n"] += 1
+            seen["keys"].add(req.url.params.get("api_key"))
+            if seen["n"] == 1:
+                return httpx.Response(503)
+            return httpx.Response(200, json={"results": []})
+        return httpx.Response(404)
+
+    ra = ReferenceAuditor(transport=httpx.MockTransport(handler))
+    ref = rmod.PaperRef(title=TINYML, surnames=["Sucipto"], year=2025)
+    assert await ra._search_openalex(ref) == []
+    assert seen["keys"] == {"oa-key"}
+
+
+async def test_one_failed_openalex_query_keeps_the_other_results(monkeypatch):
+    from app.detectors import reference_auditor as rmod
+
+    monkeypatch.setattr(rmod, "RETRY_5XX_S", 0)
+    work = {"id": "W1", "display_name": TINYML, "publication_year": 2025, "doi": None,
+            "authorships": [{"author": {"display_name": "W. Sucipto"}}]}
+
+    def handler(req):
+        if "filter" in req.url.params:
+            return httpx.Response(503)
+        return httpx.Response(200, json={"results": [work]})
+
+    ra = ReferenceAuditor(transport=httpx.MockTransport(handler))
+    ref = rmod.PaperRef(title=TINYML, surnames=["Sucipto"], year=2025)
+    got = await ra._search_openalex(ref)
+    assert [c.title for c in got] == [TINYML]
+
+
+# ------------------------------------------------------------------ Part B, B1.1: new arXiv preprints
+BEEVE = ("BeeVe: Unsupervised Discovery of Non-Semantic Acoustic States, Towards a Non-Invasive "
+         "Assessment of Honey Bee Colony Health")
+ARXIV_FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2601.01234v1</id>
+    <published>2026-01-05T00:00:00Z</published>
+    <title>BeeVe: Unsupervised Discovery of Non-Semantic Acoustic States, Towards a
+      Non-Invasive Assessment of Honey Bee Colony Health</title>
+    <author><name>Hesham Hammami</name></author>
+    <author><name>Nour Abdulaziz</name></author>
+  </entry>
+</feed>"""
+
+
+def _indexes_without_the_preprint(arxiv_feed: str | None, calls: list | None = None):
+    def handler(req):
+        host = req.url.host
+        if calls is not None:
+            calls.append(host)
+        if host == "api.crossref.org":
+            return httpx.Response(200, json={"message": {"items": []}})
+        if host == "api.openalex.org":
+            return httpx.Response(200, json={"results": []})
+        if host == "export.arxiv.org" and arxiv_feed is not None:
+            return httpx.Response(200, text=arxiv_feed)
+        return httpx.Response(429)
+
+    return handler
+
+
+async def test_a_new_arxiv_preprint_is_found_on_arxiv():
+    ra = ReferenceAuditor(transport=httpx.MockTransport(_indexes_without_the_preprint(ARXIV_FEED)))
+    c = paper_claim(f'Hammami, H. & Abdulaziz, N. (2026). "{BEEVE}." arXiv preprint.')
+    r = await ra.check(c, SessionContext(session_id="s"))
+    assert r.status == "supported" and "arXiv" in r.explanation
+
+
+async def test_a_made_up_preprint_is_still_caught():
+    empty = '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>'
+    ra = ReferenceAuditor(transport=httpx.MockTransport(_indexes_without_the_preprint(empty)))
+    c = paper_claim('Lee & Park (2026), "Transformer Models for Honeybee Colony Collapse '
+                    'Forecasting", arXiv.')
+    r = await ra.check(c, SessionContext(session_id="s"))
+    assert r.status == "contradicted" and "arXiv" in r.explanation
+
+
+async def test_older_journal_papers_do_not_query_arxiv():
+    calls: list = []
+    ra = ReferenceAuditor(
+        transport=httpx.MockTransport(_indexes_without_the_preprint(ARXIV_FEED, calls))
+    )
+    c = paper_claim('Smith & Jones (2015), "Hive Weight Forecasting with Kalman Filters", '
+                    "Journal of Apicultural Research.")
+    await ra.check(c, SessionContext(session_id="s"))
+    assert "export.arxiv.org" not in calls
+
+
+# ------------------------------------------------------------------ Part B, B1.2: arXiv IDs, APA
+BERT_FEED = f"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+  <id>http://arxiv.org/abs/1810.04805v2</id><published>2018-10-11T00:00:00Z</published>
+  <title>{BERT_TITLE}</title>
+  <author><name>Jacob Devlin</name></author><author><name>Ming-Wei Chang</name></author>
+</entry></feed>"""
+NO_ENTRY = '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>'
+
+
+def _arxiv_by_id(feed: str):
+    def handler(req):
+        if req.url.host == "export.arxiv.org" and "id_list" in req.url.params:
+            return httpx.Response(200, text=feed)
+        if req.url.host == "api.crossref.org":
+            return httpx.Response(200, json={"message": {"items": []}})
+        if req.url.host == "api.openalex.org":
+            return httpx.Response(200, json={"results": []})
+        return httpx.Response(429)
+
+    return handler
+
+
+BERT_SENTENCE = "The BERT preprint appeared on arXiv in 2018 (arXiv:1810.04805)"
+
+
+async def test_an_arxiv_id_is_looked_up_directly():
+    ra = ReferenceAuditor(transport=httpx.MockTransport(_arxiv_by_id(BERT_FEED)))
+    r = await ra.check(_paper(BERT_SENTENCE, BERT_SENTENCE), SessionContext(session_id="s"))
+    assert r.status == "supported" and "1810.04805" in r.explanation
+
+
+async def test_a_made_up_arxiv_id_is_caught():
+    ra = ReferenceAuditor(transport=httpx.MockTransport(_arxiv_by_id(NO_ENTRY)))
+    fake = "The BERT preprint appeared on arXiv in 2018 (arXiv:1810.99999)"
+    r = await ra.check(_paper(fake, fake), SessionContext(session_id="s"))
+    assert r.status == "contradicted"
+
+
+async def test_an_arxiv_id_for_a_different_paper_is_amber():
+    other = BERT_FEED.replace(BERT_TITLE, "Deep Residual Learning for Image Recognition").replace(
+        "Jacob Devlin", "Kaiming He").replace("Ming-Wei Chang", "Xiangyu Zhang")
+    ra = ReferenceAuditor(transport=httpx.MockTransport(_arxiv_by_id(other)))
+    r = await ra.check(_paper(BERT_SENTENCE, BERT_SENTENCE), SessionContext(session_id="s"))
+    assert r.status == "unverified"
+
+
+async def test_a_sentence_about_a_paper_is_never_called_fake():
+    """Without quote marks the whole sentence became the 'title' → red."""
+    ra = ReferenceAuditor(transport=httpx.MockTransport(_only_crossref_answers(200)))
+    t = "The BERT preprint appeared on arXiv in 2018"
+    assert await ra.check(_paper(t, t), SessionContext(session_id="s")) is None
+
+
+def test_apa_without_quote_marks_keeps_the_real_title():
+    from app.detectors.reference_auditor import parse_paper
+
+    q = ("Devlin, J., Chang, M.-W., Lee, K., & Toutanova, K. (2019). BERT: Pre-training of deep "
+         "bidirectional transformers for language understanding. In Proceedings of NAACL.")
+    ref = parse_paper(_paper(q, q))
+    assert ref.quoted and ref.year == 2019 and "Devlin" in ref.surnames
+    assert ref.title == ("BERT: Pre-training of deep bidirectional transformers for language "
+                         "understanding")

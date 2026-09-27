@@ -39,6 +39,7 @@ from app.detectors.base import (
     http_client,
     looks_like_instruction,
     normalize_text,
+    one_object,
     snippet,
 )
 from app.detectors import experience
@@ -332,9 +333,10 @@ class ClaimVerifier(BaseDetector):
         user += f"\nEVIDENCE SNIPPETS:\n{numbered}"
         if examples:
             user += f"\n\n{examples}"
-        data = await self.judge(JUDGE_SYSTEM, user)
-        if not isinstance(data, dict):
-            raise TypeError(f"judge returned {type(data).__name__}, expected an object")
+        raw = await self.judge(JUDGE_SYSTEM, user)
+        data = one_object(raw)
+        if data is None:
+            raise TypeError(f"judge returned {type(raw).__name__}, expected an object")
         return data
 
     def _to_result(

@@ -62,6 +62,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.detectors.base import one_object
 from app.llm import LLMError, complete_json, fast_model_name, llm_available
 from app.models import SessionContext
 
@@ -280,8 +281,10 @@ async def _update(session: SessionContext, judge) -> Brief | None:
             + "\n\nNEW MESSAGES:\n"
             + "\n".join(lines)
         )
-        data = await judge(BRIEF_SYSTEM, user, max_tokens=700, model=fast_model_name())
-        if not isinstance(data, dict):
+        data = one_object(
+            await judge(BRIEF_SYSTEM, user, max_tokens=700, model=fast_model_name())
+        )
+        if data is None:
             raise LLMError("brief: model returned no object")
         brief = Brief(
             goal=" ".join(str(data.get("goal") or brief.goal).split())[:300],

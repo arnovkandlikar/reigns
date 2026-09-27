@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from app.detectors.base import BaseDetector, snippet
+from app.detectors.base import BaseDetector, one_object, snippet
 from app.detectors.claim_gate import gate
 from app.learning import memory
 from app.learning.memory import USER_KINDS, MemoryCard
@@ -446,11 +446,12 @@ class MemoryConsistency(BaseDetector):
             body = f"CLAIM: {claim.normalized[:500]}"
             if claim.quote and claim.quote.strip() != claim.normalized.strip():
                 body += f"\n(original wording: {claim.quote[:300]})"
-        data = await (self.judge or complete_json)(
+        raw = await (self.judge or complete_json)(
             JUDGE_SYSTEM, f"{body}\n\nUSER MEMORIES:\n{numbered}"
         )
-        if not isinstance(data, dict):
-            raise TypeError(f"judge returned {type(data).__name__}, expected an object")
+        data = one_object(raw)
+        if data is None:
+            raise TypeError(f"judge returned {type(raw).__name__}, expected an object")
         return data
 
     def _to_result(self, data: dict[str, Any], cards: list[MemoryCard]) -> DetectorResult | None:
