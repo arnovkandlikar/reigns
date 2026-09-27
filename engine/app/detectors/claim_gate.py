@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.detectors import session_brief
-from app.detectors.base import looks_like_instruction, normalize_text, one_object
+from app.detectors.base import looks_like_instruction, normalize_text
 from app.llm import LLMError, complete_json, fast_model_name, llm_available
 from app.models import Claim, SessionContext
 
@@ -136,56 +136,10 @@ _REQUEST_UNTRUE = re.compile(
 )
 
 
-# "Some old sites say Everest is 7,849 m, but …", "A common myth is that …, but in reality …":
-# the reply REPORTS a claim in order to reject it. QA (F7) saw the model gate call this a
-# world fact on some runs, so this obvious pattern is decided without the model.
-_REPORTED = re.compile(
-    r"^\W*(?:(?:some|many|most|older|old|certain|a few|several|other)\s+){0,2}"
-    r"(?:\w+\s+){0,2}?(?:sites?|websites?|sources?|people|articles?|books?|reports?|"
-    r"textbooks?|posts?|folks|guides?|references?)\s+(?:say|said|claim|claimed|state|stated|"
-    r"list|listed|suggest|report|believe|give|gave|put)\b"
-    r"|^\W*(?:it(?:'s| is| was)\s+(?:often|commonly|widely|sometimes)\s+(?:said|claimed|"
-    r"believed|thought|stated))"
-    r"|^\W*(?:a|the|one)\s+(?:common\s+|popular\s+|widespread\s+|old\s+)?(?:myth|"
-    r"misconception|belief|claim|rumou?r)\b",
-    re.IGNORECASE,
-)
-_REJECTION = re.compile(
-    r"\b(?:but|however|in reality|actually|in fact|that'?s (?:not|false|wrong|a myth)|"
-    r"this is (?:not|false|wrong|a myth)|is (?:false|wrong|incorrect|a myth)|incorrect|"
-    r"outdated|debunked)\b",
-    re.IGNORECASE,
-)
-
-
-def reported_then_rejected(session: SessionContext, claim: Claim) -> bool:
-    """The reply attributes the claim to others and then rejects it in the same breath."""
-    if not _REPORTED.search(claim.quote.strip()):
-        return False
-    reply = session.message(claim.message_id)
-    text = reply.text if reply else claim.quote
-    at = text.find(claim.quote[:40])
-    after = text[at + len(claim.quote) : at + len(claim.quote) + 250] if at >= 0 else text
-    return bool(_REJECTION.search(after) or _REJECTION.search(claim.quote))
-
-
-def demo_catch_requested() -> bool:
-    """REIGNS_DEMO_CATCH_REQUESTED=1: DEMO ONLY. Treat false content the user asked for
-    ("give me 3 false statements") as if Claude asserted it, so a demo can show the pet catching
-    lies on cue. Off by default: in real use, flagging lies you asked for is a false alarm."""
-    return os.environ.get("REIGNS_DEMO_CATCH_REQUESTED") == "1"
-
-
-def _asked_for_untrue(session: SessionContext, claim: Claim) -> bool:
-    user = session.previous(claim.message_id, "user")
-    return bool(user and _REQUEST_UNTRUE.search(user.text.strip()[:400]))
-
-
 def requested_untrue(session: SessionContext, claim: Claim) -> bool:
     """Did the user's message right before this reply ask for false/made-up content?"""
-    if demo_catch_requested():
-        return False
-    return _asked_for_untrue(session, claim)
+    user = session.previous(claim.message_id, "user")
+    return bool(user and _REQUEST_UNTRUE.search(user.text.strip()[:400]))
 
 
 def heuristic(claim: Claim, session: SessionContext | None = None) -> GateResult:
@@ -228,8 +182,8 @@ async def _classify(claim: Claim, session: SessionContext, judge) -> GateResult:
     )
     if claim.normalized and claim.normalized != claim.quote:
         user += f"\n(extractor's restatement: {claim.normalized[:400]})"
-    data = one_object(await judge(GATE_SYSTEM, user, max_tokens=300, model=fast_model_name()))
-    if data is None:
+    data = await judge(GATE_SYSTEM, user, max_tokens=300, model=fast_model_name())
+    if not isinstance(data, dict):
         raise LLMError("gate returned no object")
     kind = str(data.get("kind", "")).strip().lower()
     standalone = str(data.get("standalone") or "").strip() or claim.normalized or claim.quote
@@ -260,10 +214,6 @@ async def gate(claim: Claim, session: SessionContext, judge: Any = None) -> Gate
         return _remember(
             session, key, GateResult(claim.normalized, "advice", "", None, "heuristic")
         )
-    if reported_then_rejected(session, claim):  # fast path: "some sites say X, but …"
-        return _remember(
-            session, key, GateResult(claim.normalized, "not_asserted", "", None, "heuristic")
-        )
     if judge is None and not _enabled():
         return _remember(session, key, heuristic(claim, session))
 
@@ -273,20 +223,10 @@ async def gate(claim: Claim, session: SessionContext, judge: Any = None) -> Gate
         session.cache[key] = task
     try:
         # shield: one detector timing out must not cancel the call the others are awaiting
-        result = await asyncio.shield(task)
+        return await asyncio.shield(task)
     except (LLMError, TypeError, ValueError) as exc:
         log.warning("claim gate failed for %s, using heuristic: %s", claim.claim_id, exc)
-        result = heuristic(claim, session)
-    if (
-        result.kind == "not_asserted"
-        and demo_catch_requested()
-        and _asked_for_untrue(session, claim)
-    ):
-        # Demo mode: the lie the user asked for is checked like any other fact. Myths that the
-        # reply itself rejects ("some say X, but that's false") still stay unflagged above.
-        return GateResult(result.standalone, "world_fact", result.subject, result.question,
-                          result.source)
-    return result
+        return heuristic(claim, session)
 
 
 def peek(session: SessionContext, claim_id: str) -> GateResult | None:

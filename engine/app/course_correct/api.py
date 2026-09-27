@@ -8,8 +8,7 @@ import re
 import uuid
 
 from app.course_correct.bandit import choose_variant
-from app.detectors.base import content_words, normalize_text, snippet
-from app.learning.memory import reign_authored
+from app.detectors.base import content_words, snippet
 from app.llm import LLMError, complete_json, fast_model_name, llm_available
 from app.models import (
     BubbleContent,
@@ -124,25 +123,6 @@ def _flagged(session: SessionContext) -> list[ClaimVerdict]:
     verdicts = [v for v in session.active_verdicts() if v.final in ("red", "amber")]
     verdicts.sort(key=lambda v: (v.final != "red", -_position_for_verdict(session, v)))
     return verdicts
-
-
-def _handoff_key(session: SessionContext, verdict: ClaimVerdict) -> str:
-    claim = session.claims.get(verdict.claim_id)
-    text = claim.normalized if claim and claim.normalized else _clean_claim(verdict, claim)
-    return normalize_text(text) or verdict.claim_id
-
-
-def _newest_unique(session: SessionContext, verdicts: list[ClaimVerdict]) -> list[ClaimVerdict]:
-    """Keep the latest occurrence of each claim in a handoff."""
-    latest: dict[str, tuple[int, int, ClaimVerdict]] = {}
-    for index, verdict in enumerate(verdicts):
-        key = _handoff_key(session, verdict)
-        candidate = (_position_for_verdict(session, verdict), index, verdict)
-        if key not in latest or candidate[:2] > latest[key][:2]:
-            latest[key] = candidate
-    return [entry[2] for entry in sorted(
-        latest.values(), key=lambda entry: (entry[2].final != "red", -entry[0], -entry[1])
-    )]
 
 
 def _position_for_verdict(session: SessionContext, verdict: ClaimVerdict) -> int:
@@ -401,8 +381,7 @@ def _problem_text(verdict: ClaimVerdict, claim: Claim | None = None,
 
 
 def _evidence_url(verdict: ClaimVerdict) -> str | None:
-    result = _result_for(verdict)
-    if result is not None:
+    for result in verdict.detector_results:
         for item in result.evidence:
             if item.url:
                 return item.url
@@ -410,42 +389,39 @@ def _evidence_url(verdict: ClaimVerdict) -> str | None:
 
 
 def _evidence_summary(verdict: ClaimVerdict, session: SessionContext | None = None) -> str:
-    result = _result_for(verdict)
-    if result is None:
-        return "No direct supporting quote was returned."
-    if result.status == "not_in_source":
-        if session is None or _has_source_doc(session, session.claims.get(verdict.claim_id)):
+    for result in verdict.detector_results:
+        if result.status == "not_in_source":
+            if session is not None and not _has_source_doc(
+                session, session.claims.get(verdict.claim_id)
+            ):
+                continue
             return "No supporting passage was found in the relevant source excerpts."
-        return "No direct supporting quote was returned."
-    if result.status in ("unverified", "uncertain"):
-        return "No direct supporting quote was returned."
-    if result.evidence:
-        if result.detector == "reference_auditor":
-            missing = [
-                item.source
-                for item in result.evidence
-                if item.source in ("Crossref", "OpenAlex")
-                and item.snippet.lower().startswith("no matching work")
-            ]
-            if missing:
-                sources = " or ".join(dict.fromkeys(missing))
-                return f"No matching paper found in {sources}."
-        plain = _MATCH_SCORE.sub("", result.evidence[0].snippet)
-        return snippet(re.sub(r"\.{2,}", ".", plain).strip(), 240)
+        if result.status in ("error", "unverified", "uncertain"):
+            continue
+        if result.evidence:
+            if result.detector == "reference_auditor":
+                missing = [
+                    item.source
+                    for item in result.evidence
+                    if item.source in ("Crossref", "OpenAlex")
+                    and item.snippet.lower().startswith("no matching work")
+                ]
+                if missing:
+                    sources = " or ".join(dict.fromkeys(missing))
+                    return f"No matching paper found in {sources}."
+            plain = _MATCH_SCORE.sub("", result.evidence[0].snippet)
+            return snippet(re.sub(r"\.{2,}", ".", plain).strip(), 240)
     return "No direct supporting quote was returned."
 
 
-def _pattern(causes: list[RootCause], *, has_dependencies: bool = False) -> tuple[str, str]:
-    cause = next((item for item in causes
-                  if item != "anchored_wrong_assumption" or has_dependencies), "knowledge_gap")
+def _pattern(causes: list[RootCause]) -> tuple[str, str]:
+    cause = causes[0] if causes else "knowledge_gap"
     _name, pattern, redo = _CAUSE_COPY[cause]
     return pattern, redo
 
 
 def _is_reigns_prompt(text: str, session: SessionContext) -> bool:
     """Exclude pasted Fix it text from the user's original task question."""
-    if reign_authored(session, text):
-        return True
     normalized = " ".join(text.split()).casefold()
     for correction in session.corrections:
         if not correction.inserted:
@@ -474,11 +450,7 @@ def _correction_text(
     session: SessionContext,
     variant: str,
 ) -> str:
-    pattern, redo = _pattern(profile.root_causes, has_dependencies=bool(profile.blast_radius))
-    if level == 4:
-        flagged = _newest_unique(session, flagged)
-        if not profile.blast_radius and len(flagged) > 1:
-            pattern = "Separate factual errors; recheck each one independently."
+    pattern, redo = _pattern(profile.root_causes)
     issue_lines = []
     for index, verdict in enumerate(flagged, start=1):
         evidence = _evidence_summary(verdict, session)
@@ -490,11 +462,6 @@ def _correction_text(
     issues = "\n".join(issue_lines) or "No active flagged claim is available to recheck."
     target_ids = list(dict.fromkeys(profile.failures + profile.blast_radius))
     source_claims = [session.claims[cid] for cid in target_ids if cid in session.claims]
-    if level == 4:
-        source_claims = [session.claims[v.claim_id] for v in _newest_unique(
-            session, [session.verdicts[c.claim_id] for c in source_claims
-                      if c.claim_id in session.verdicts]
-        )]
     target = "; ".join(
         _clean_claim(session.verdicts[claim.claim_id], claim)
         for claim in source_claims
@@ -551,18 +518,15 @@ def _correction_text(
     user_questions = [m.text.strip() for m in sorted(session.messages, key=lambda m: m.position)
                       if m.role == "user" and m.text.strip()
                       and not _is_reigns_prompt(m.text, session)]
-    original_question = (user_questions[-1] if user_questions else "") or next(
+    original_question = next((text for text in reversed(user_questions) if "?" in text),
+                             user_questions[-1] if user_questions else "") or next(
         (claim.context for claim in source_claims
          if claim.context and not _is_reigns_prompt(claim.context, session)),
         "Original question unavailable",
     )
-    problem_keys = {_handoff_key(session, verdict) for verdict in flagged}
     confirmed = [
         _clean_claim(verdict, session.claims.get(verdict.claim_id))
-        for verdict in _newest_unique(
-            session, [v for v in session.active_verdicts() if v.final == "green"]
-        )
-        if _handoff_key(session, verdict) not in problem_keys
+        for verdict in session.active_verdicts() if verdict.final == "green"
     ]
     confirmed_text = "; ".join(confirmed[:3]) if confirmed else "No claims independently confirmed yet."
     return (
@@ -583,17 +547,14 @@ async def build_bubble(level: int, profile: DriftProfile, session: SessionContex
     level = max(0, min(4, int(level)))
     flagged = _flagged(session)
     visible = flagged
-    if not visible:
-        level = 0
     direct_count = sum(_direct_issue(v) for v in visible)
     source_absence = any(_source_absence(v, session) for v in visible)
     substantiated = bool(direct_count or source_absence)
     # FR-D4: an upstream red verdict backed only by failed lookup is still a verify nudge.
     if visible and not substantiated:
         level = 1
-    causes = [cause for cause in profile.root_causes
-              if cause != "anchored_wrong_assumption" or profile.blast_radius]
-    pattern, _redo = _pattern(causes, has_dependencies=bool(profile.blast_radius))
+    causes = profile.root_causes
+    pattern, _redo = _pattern(causes)
     if level == 1 and flagged:
         headline = (
             "I found a claim worth rechecking."

@@ -265,20 +265,6 @@ def word_overlap(a: str, b: str) -> float:
     return len(wa & wb) / len(wa | wb)
 
 
-def one_object(data: Any) -> dict[str, Any] | None:
-    """The JSON object a judge was asked for, or None.
-
-    Models sometimes wrap the object in a list (`[{"verdict": …}]`). QA (Part C) found the
-    Claim Verifier failing with "judge returned list, expected an object" on a plain fact, which
-    silently dropped the web check. A one-object list is unwrapped; anything else is None.
-    """
-    if isinstance(data, dict):
-        return data
-    if isinstance(data, list) and data and all(isinstance(d, dict) for d in data):
-        return data[0]
-    return None
-
-
 def snippet(text: str, limit: int = SNIPPET_MAX) -> str:
     """Single-line, length-capped evidence snippet."""
     flat = _SPACES.sub(" ", text).strip()

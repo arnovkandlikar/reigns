@@ -39,7 +39,6 @@ from app.detectors.base import (
     http_client,
     looks_like_instruction,
     normalize_text,
-    one_object,
     snippet,
 )
 from app.detectors import experience
@@ -103,9 +102,6 @@ Rules:
 - The quote must be about the SAME property the claim is about. For "water boils at 50°C at
   sea level", only a sentence stating the boiling point settles it; a sentence about
   sea-level air pressure does not, even though it mentions sea level.
-- Same SCOPE too: a figure for a different route, endpoint, period, version or edition is
-  NOT a contradiction ("Tokyo to Shin-Osaka takes 2 h 21 min" does not contradict "Tokyo to
-  Kyoto takes about 2 h 15 min"). Answer "unverified" instead.
 - Small rounding or phrasing differences ("about 330 m" vs "330 metres") are NOT
   contradictions. Different years, names or clearly different numbers ARE.
 - "explanation" is one short plain-English sentence for a non-expert, e.g.
@@ -154,7 +150,7 @@ class ClaimVerifier(BaseDetector):
         # FR-L3: look up similar past cases WHILE searching, so it adds no latency.
         past = asyncio.ensure_future(self._past_cases(query, claim.type))
         try:
-            snippets, web_ok = await self.cached(
+            snippets = await self.cached(
                 session, f"evidence:{normalize_text(query)}", lambda: self._gather(query)
             )
         except BaseException:
@@ -162,8 +158,6 @@ class ClaimVerifier(BaseDetector):
             raise
         if not snippets:
             past.cancel()
-            if not web_ok:
-                return self.result("error", 0.0, WEB_DOWN)
             return self.result("unverified", 0.5, "No sources found that confirm or deny this.")
 
         examples = await past
@@ -172,13 +166,7 @@ class ClaimVerifier(BaseDetector):
             f"judge:{normalize_text(query)}",
             lambda: self._judge(claim, snippets, examples),
         )
-        result = self._to_result(verdict, snippets, claim.normalized or claim.quote)
-        if result is not None and result.status == "unverified" and not web_ok:
-            # QA: Tavily hit its usage limit, and Wikipedia alone left ~40% of CORRECT claims
-            # "unverified" (amber). An outage on our side is not doubt about the claim: report
-            # it as "couldn't check" (ignored by aggregation), never as amber.
-            return self.result("error", 0.0, WEB_DOWN)
-        return result
+        return self._to_result(verdict, snippets, claim.normalized or claim.quote)
 
     async def _past_cases(self, query: str, claim_type: str) -> str:
         """Experience memory block for the judge ("" when Atlas is off or nothing is similar)."""
@@ -191,9 +179,8 @@ class ClaimVerifier(BaseDetector):
             log.info("claim_verifier: experience lookup failed: %r", exc)
             return ""
 
-    async def _gather(self, query: str) -> tuple[list[Snippet], bool]:
-        """Search + Wikipedia in parallel → (snippets, web search worked). Snippets are [] only
-        if every source came back empty."""
+    async def _gather(self, query: str) -> list[Snippet]:
+        """Search + Wikipedia in parallel. Returns [] only if every source came back empty."""
         web, wiki = await asyncio.gather(
             self._web_search(query), self._wikipedia(query), return_exceptions=True
         )
@@ -217,29 +204,16 @@ class ClaimVerifier(BaseDetector):
             if key not in seen and s.text.strip():
                 seen.add(key)
                 unique.append(s)
-        return unique[:MAX_SNIPPETS], not isinstance(web, BaseException)
+        return unique[:MAX_SNIPPETS]
 
     # ------------------------------------------------------------------ evidence sources
     async def _web_search(self, query: str) -> list[Snippet]:
-        """Tavily, falling back to Brave if Tavily fails (usage limit, bad key, outage).
-        Raises if every configured search failed, so the caller knows search was DOWN rather
-        than empty."""
         tavily, brave = os.environ.get("TAVILY_API_KEY"), os.environ.get("BRAVE_API_KEY")
-        if not tavily and not brave:
-            return []  # no search key configured → Wikipedia only (by design, not an outage)
-        errors: list[str] = []
         if tavily:
-            try:
-                return await self._tavily(query, tavily)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"Tavily: {_why(exc)}")
+            return await self._tavily(query, tavily)
         if brave:
-            try:
-                return await self._brave(query, brave)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"Brave: {_why(exc)}")
-        _warn_search_down(errors)
-        raise ConnectionError("; ".join(errors))
+            return await self._brave(query, brave)
+        return []  # no search key configured → Wikipedia only
 
     async def _tavily(self, query: str, key: str) -> list[Snippet]:
         body = {"query": query, "max_results": SEARCH_RESULTS, "search_depth": "basic"}
@@ -333,10 +307,9 @@ class ClaimVerifier(BaseDetector):
         user += f"\nEVIDENCE SNIPPETS:\n{numbered}"
         if examples:
             user += f"\n\n{examples}"
-        raw = await self.judge(JUDGE_SYSTEM, user)
-        data = one_object(raw)
-        if data is None:
-            raise TypeError(f"judge returned {type(raw).__name__}, expected an object")
+        data = await self.judge(JUDGE_SYSTEM, user)
+        if not isinstance(data, dict):
+            raise TypeError(f"judge returned {type(data).__name__}, expected an object")
         return data
 
     def _to_result(
@@ -382,16 +355,6 @@ class ClaimVerifier(BaseDetector):
             source = snippets[0]
             quote = snippet(source.text, 200)
 
-        if verdict == "contradicted" and rounding_only(claim_text, quote):
-            # QA: a rounding-level "contradiction" (8,849 m vs 8,848.86 m) was stored as a
-            # correction and later turned a correct claim red. The source gives the same
-            # number up to rounding, so it SUPPORTS the claim.
-            return self.result(
-                "supported",
-                0.75,
-                "Matches the sources (the small difference is rounding).",
-                [Evidence(source=source.source, url=source.url, snippet=snippet(quote))],
-            )
         if verdict == "contradicted" and not _comparable_numbers(claim_text, quote):
             # Live bug: "Water boils at 50°C" was marked contradicted by "Average sea-level
             # pressure is 1,013.25 hPa". A numeric claim needs a quote with a number of the
@@ -424,34 +387,6 @@ class ClaimVerifier(BaseDetector):
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-WEB_DOWN = (
-    "Web search is unavailable right now, so this couldn't be checked (Wikipedia alone didn't "
-    "settle it)."
-)
-_search_warned = False
-
-
-def _why(exc: Exception) -> str:
-    """Short reason, including the provider's message (e.g. Tavily's usage-limit text)."""
-    if isinstance(exc, httpx.HTTPStatusError):
-        body = exc.response.text[:160].replace("\n", " ")
-        return f"HTTP {exc.response.status_code} {body}"
-    return repr(exc)[:160]
-
-
-def _warn_search_down(errors: list[str]) -> None:
-    """Say it loudly once per engine run: every fact check degrades until this is fixed."""
-    global _search_warned
-    if not _search_warned:
-        _search_warned = True
-        log.error(
-            "WEB SEARCH DOWN (%s). Fact checks fall back to Wikipedia only and skip what it "
-            "can't settle. Fix: put a fresh TAVILY_API_KEY (or a BRAVE_API_KEY) in .env and "
-            "restart the engine.",
-            "; ".join(errors),
-        )
-
-
 def _locate_quote(quote: str, snippets: list[Snippet], index: Any) -> Snippet | None:
     """Return the snippet that really contains `quote` (after normalizing), else None.
 
@@ -608,33 +543,6 @@ def _number_kinds(text: str) -> set[str]:
     if _YEAR.search(text):
         kinds.add("year")
     return kinds
-
-
-_PLAIN_NUMBER = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
-ROUNDING = 0.005  # 0.5 %: "8,849 m" vs "8,848.86 m", "330 m" vs "330.0 m"
-
-
-def _values(text: str) -> list[float]:
-    out = []
-    for raw in _PLAIN_NUMBER.findall(text):
-        try:
-            out.append(float(raw.replace(",", "")))
-        except ValueError:
-            continue
-    return out
-
-
-def rounding_only(claim_text: str, quote: str) -> bool:
-    """True when every number in the claim has a match within 0.5 % in the quote, so any
-    "contradiction" is just rounding or survey precision (8,849 vs 8,848.86). Years never
-    round: 1899 vs 1889 is a real difference."""
-    claim_vals = [v for v in _values(claim_text) if not (1000 <= v <= 2099 and v.is_integer())]
-    if not claim_vals or _YEAR.search(claim_text) and len(claim_vals) < len(_values(claim_text)):
-        return False
-    quote_vals = _values(quote)
-    return all(
-        any(abs(q - c) <= ROUNDING * max(abs(c), 1.0) for q in quote_vals) for c in claim_vals
-    )
 
 
 def _comparable_numbers(claim_text: str, quote: str) -> bool:

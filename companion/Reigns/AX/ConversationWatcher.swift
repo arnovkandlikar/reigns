@@ -238,16 +238,10 @@ final class ConversationWatcher: @unchecked Sendable {
         }
     }
 
-    /// Stable id for a chat: the message_ids of its first message and its first reply, joined by "+"
-    /// (the engine builds the same key from the message.new ids it receives; session.py
-    /// full_chat_key). The reply is part of the key because two chats that open with the same
-    /// prompt would otherwise share one panic score. Before the reply exists the key is just the
-    /// first message's id, and the engine starts such a chat calm instead of restoring anything.
+    /// Stable id for a chat: the message_id its first message has (or had) when sent to the engine.
     static func chatKey(_ messages: [ChatMessage]) -> String? {
         guard let first = messages.first(where: { $0.position == 0 }) else { return nil }
-        let firstID = messageID(position: 0, text: first.text)
-        guard let reply = messages.first(where: { $0.position == 1 }) else { return firstID }
-        return firstID + "+" + messageID(position: 1, text: reply.text)
+        return messageID(position: 0, text: first.text)
     }
 
     static func messageID(position: Int, text: String) -> String {

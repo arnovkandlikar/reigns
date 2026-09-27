@@ -25,7 +25,6 @@ import os
 import re
 import weakref
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote as urlquote
 from urllib.parse import urlencode, urlparse
@@ -34,7 +33,6 @@ import httpx
 
 from app.detectors.base import (
     BaseDetector,
-    content_words,
     http_client,
     normalize_text,
     similarity,
@@ -56,8 +54,6 @@ YEAR_TOLERANCE = 1  # FR-C1: year ±1 (preprint vs. journal year)
 # Title + authors match but the record is LATER than the cited year (re-registrations, later
 # editions, journal versions of old preprints) → still the real paper, slightly less sure.
 MAX_LATER_RECORD_YEARS = 10
-RETRY_5XX_S = 1.0  # one short retry when a paper database is briefly unavailable
-RECENT_RECORD_YEARS = 3  # a record this new for an older citation looks like a re-registration
 SEARCH_ROWS = 5  # FR-C1: rows=5
 
 # Rate limits: Crossref and Semantic Scholar both return 429 when one reply cites several
@@ -65,13 +61,6 @@ SEARCH_ROWS = 5  # FR-C1: rows=5
 # still run in parallel with each other), and a 429 is retried once after Retry-After
 # (capped so we stay inside the engine's 12 s detector budget).
 MAX_RETRY_WAIT_S = 2.0
-# How many requests may run at once per API. Crossref (polite pool) and OpenAlex allow ~10/s;
-# Semantic Scholar's public pool is ~1/s. QA: a reply citing 5 papers queued 10 OpenAlex calls
-# one by one and the whole check timed out at 12 s, leaving every citation unchecked.
-API_CONCURRENCY = {"crossref": 3, "openalex": 3, "s2": 1, "arxiv": 1}
-# Per-paper time budget. The engine gives a detector 12 s for ALL of a reply's claims, so a
-# paper decides with the databases that answered by then instead of waiting for the slowest.
-PAPER_BUDGET_S = 8.0
 
 CROSSREF_URL = "https://api.crossref.org/works"
 S2_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
@@ -79,17 +68,6 @@ S2_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 # Added after a live run where S2 rate-limited us and Crossref's only "Attention Is All You
 # Need" record was a 2025 re-registration, so a real 2017 paper came back amber.
 OPENALEX_URL = "https://api.openalex.org/works"
-# arXiv's own API: the only place a brand-new preprint is guaranteed to be. QA (Part B, B1.1):
-# the real 2026 arXiv preprint "BeeVe: …" went red — Crossref never indexes arXiv, and OpenAlex
-# hadn't picked it up yet. Asked only for citations that mention arXiv / a preprint, or are
-# from this year or last (free, no key; arXiv asks for one request at a time).
-ARXIV_URL = "https://export.arxiv.org/api/query"
-ARXIV_SEARCH_URL = "https://arxiv.org/search/"
-_PREPRINT_CUE = re.compile(r"\barxiv\b|\bpre-?prints?\b", re.IGNORECASE)
-_ATOM = "{http://www.w3.org/2005/Atom}"
-_ARXIV_ID = re.compile(
-    r"(?:arxiv[:\s]*|arxiv\.org/(?:abs|pdf)/)(\d{4}\.\d{4,5})(?:v\d+)?", re.IGNORECASE
-)
 PYPI_URL = "https://pypi.org/pypi/{name}/json"
 NPM_URL = "https://registry.npmjs.org/{name}"
 
@@ -104,9 +82,6 @@ class PaperRef:
     title: str
     surnames: list[str] = field(default_factory=list)
     year: int | None = None
-    # False for a shorthand mention with no quoted title ("Giovannesi et al. (2025) Vit4V"):
-    # `title` is then only the name it was called by, so "no such title" proves nothing.
-    quoted: bool = True
 
 
 # Titles are normally quoted: "…", “…”, or '…' (the extractor's normalized form uses '…').
@@ -115,39 +90,6 @@ _YEAR = re.compile(r"\b(19[5-9]\d|20[0-4]\d)\b")
 # Capitalized words, allowing accents, hyphens and apostrophes (O'Neil, García-Márquez).
 _NAME_WORD = re.compile(r"\b[A-Z][\w'’\-]+", re.UNICODE)
 _NOT_NAMES = {"Et", "Al", "And", "The", "In", "A", "An", "Of", "On", "Paper", "Proceedings"}
-
-
-_SHORTHAND = re.compile(
-    r"^(?P<authors>.*?)\s*(?:\bet al\.?)?\s*\(\s*(?P<year>(?:19|20)\d\d)[a-z]?\s*\)\s*"
-    r"(?P<rest>.*)$"
-)
-
-
-def _shorthand(text: str) -> PaperRef | None:
-    """ "Giovannesi et al. (2025) Vit4V", "Huet et al. (2026) Scientific Reports": authors and
-    a year, then whatever short name the paper was called by (not its title). QA (Part B):
-    these went red as "no paper titled 'Giovannesi et al. (2025) Vit4V'"."""
-    m = _SHORTHAND.match(text.strip())
-    if not m:
-        return None
-    authors = m.group("authors")
-    surnames = [w for w in _NAME_WORD.findall(authors) if w not in _NOT_NAMES]
-    if not surnames:
-        return None
-    rest = m.group("rest").lstrip(" .,;:-")
-    # APA without quote marks: "Devlin, J., … (2019). BERT: Pre-training of … In Proceedings …"
-    # The title runs to the first sentence end; a real title (4+ words) is looked up like a
-    # quoted one, so a made-up APA citation can still be caught.
-    apa = re.match(r"(?P<title>[^.?!]{12,}?[.?!])(?:\s|$)", rest)
-    if apa and len(apa.group("title").split()) >= 4:
-        return PaperRef(
-            title=apa.group("title").rstrip(".").strip(),
-            surnames=surnames,
-            year=int(m.group("year")),
-        )
-    rest = re.sub(r"\([^)]*\)", " ", rest)  # "(arXiv)"
-    rest = " ".join(rest.strip(" .,;:-").split())
-    return PaperRef(title=rest, surnames=surnames, year=int(m.group("year")), quoted=False)
 
 
 def parse_paper(claim: Claim) -> PaperRef:
@@ -167,19 +109,8 @@ def parse_paper(claim: Claim) -> PaperRef:
             if source is claim.quote:
                 title_start = m.start()
             break
-    if not title:  # no quotes anywhere
-        short = _shorthand(text)
-        if short is not None:
-            return short
-        # Best effort: the whole quote is the title. Without quotes we can't be sure it IS the
-        # title (QA B1.2: "The BERT preprint appeared on arXiv in 2018 (arXiv:1810.04805)" went
-        # red as "no paper titled 'The BERT preprint appeared…'"), so it can only be confirmed.
-        return PaperRef(
-            title=claim.quote.strip().rstrip(".,"),
-            surnames=[],
-            year=int(years[0]) if (years := _YEAR.findall(text)) else None,
-            quoted=False,
-        )
+    if not title:  # no quotes anywhere → best effort: the whole quote is the title
+        title = claim.quote
 
     years = _YEAR.findall(text) or _YEAR.findall(claim.normalized)
     year = int(years[0]) if years else None
@@ -192,27 +123,6 @@ def parse_paper(claim: Claim) -> PaperRef:
     return PaperRef(title=title.strip().rstrip(".,"), surnames=surnames, year=year)
 
 
-# Words that only show up around real references.
-_CITATION_CUE = re.compile(
-    r"\bet al\b|&|\b(?:paper|article|study|journal|proceedings|conference|workshop|preprint|"
-    r"arxiv|doi|published|publication|vol\.?|pp\.?|in:|nature|science|ieee|acm|neurips|nips|"
-    r"icml|iclr|acl|emnlp|naacl|cvpr|eccv|iccv|aaai|ijcai)\b",
-    re.IGNORECASE,
-)
-SHORT_TITLE_WORDS = 3
-
-
-def looks_like_citation(claim: Claim, ref: PaperRef) -> bool:
-    """Is this really a reference, or a phrase in quotes? QA (Part C, C7): the extractor made
-    `Perl (1987) filled the "glue language" gap` into "The paper 'glue language' exists", and
-    the audit came back "no such paper" → red. Short titles (≤ 3 words) need a citation cue in
-    the ORIGINAL wording (et al., &, a venue, "paper", DOI …); longer titles are trusted as before,
-    and so are claims whose original wording names a paper outright."""
-    if len(ref.title.split()) > SHORT_TITLE_WORDS:
-        return True
-    return bool(_CITATION_CUE.search(claim.quote))
-
-
 _URL = re.compile(r"https?://[^\s<>\"'`)\]]+")
 
 
@@ -222,46 +132,6 @@ def parse_url(claim: Claim) -> str | None:
         if m:
             return m.group(0).rstrip(".,;:!?")
     return None
-
-
-_DOI = re.compile(r"\b(10\.\d{4,9}/[^\s?#\"'<>]+)", re.IGNORECASE)
-DOI_HANDLE_URL = "https://doi.org/api/handles/{doi}"
-
-
-# The companion reads the Claude window with no space between a link and the sentence after it
-# ("https://doi.org/10.2307/1414040This was the first…"). QA (demo run): six real DOIs went red
-# as 404s because of the glued word. A capitalized word stuck onto a digit or a lowercase letter
-# at the very end of a link is the next sentence, not part of the address.
-_GLUED_WORD = re.compile(r"(?<=[0-9a-z/])([A-Z][a-z]+)$")
-
-
-def unglued(url: str) -> str | None:
-    """The link without a word glued onto its end, or None if nothing looks glued."""
-    m = _GLUED_WORD.search(url)
-    return url[: m.start()] if m else None
-
-
-def doi_in(url: str) -> str | None:
-    """The DOI inside a doi.org / publisher link ("https://doi.org/10.1242/jeb.068718")."""
-    m = _DOI.search(url)
-    if not m:
-        return None
-    doi = m.group(1).rstrip(".,;:)]")
-    # DOIs end in a digit or an identifier, never in a digit + capitalized English word.
-    g = re.search(r"(?<=\d)[A-Z][a-z]+$", doi)
-    return doi[: g.start()] if g else doi
-
-
-def citation_context(session: SessionContext, claim: Claim, doi: str) -> str:
-    """The text of the reply just before the DOI on the same paragraph (the citation it belongs
-    to), so the DOI's real title can be compared with the paper the reply attached it to."""
-    msg = session.message(claim.message_id) if session else None
-    text = getattr(msg, "text", "") or ""
-    at = text.lower().find(doi.lower())
-    if at < 0:
-        return ""
-    start = max(text.rfind("\n\n", 0, at), text.rfind("\n", 0, at))
-    return text[start + 1 : at][-600:]
 
 
 def attributed_text(claim: Claim, url: str) -> str | None:
@@ -384,33 +254,6 @@ def _join_or(names: list[str]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
 
 
-def _arxiv_candidates(xml_text: str) -> list[Candidate]:
-    import xml.etree.ElementTree as ET  # stdlib; only needed for arXiv's Atom feed
-
-    out = []
-    for entry in ET.fromstring(xml_text).findall(f"{_ATOM}entry"):
-        title = " ".join((entry.findtext(f"{_ATOM}title") or "").split())
-        if not title or title.lower() == "error":
-            continue
-        published = entry.findtext(f"{_ATOM}published") or ""
-        year = int(published[:4]) if published[:4].isdigit() else None
-        surnames = []
-        for author in entry.findall(f"{_ATOM}author"):
-            name = (author.findtext(f"{_ATOM}name") or "").split()
-            if name:
-                surnames.append(name[-1])
-        url = entry.findtext(f"{_ATOM}id")
-        out.append(Candidate(source="arXiv", title=title, surnames=surnames, year=year, url=url))
-    return out
-
-
-def wants_arxiv(claim: Claim, ref: PaperRef) -> bool:
-    """Ask arXiv too when the citation says arXiv / preprint, or is from this year or last."""
-    if _PREPRINT_CUE.search(f"{claim.quote} {claim.normalized}"):
-        return True
-    return ref.year is not None and ref.year >= _this_year() - 1
-
-
 def _openalex_candidates(data: dict[str, Any]) -> list[Candidate]:
     out = []
     for w in data.get("results") or []:
@@ -436,14 +279,10 @@ def _openalex_candidates(data: dict[str, Any]) -> list[Candidate]:
 _LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
-def _this_year() -> int:
-    return datetime.now(timezone.utc).year
-
-
 def _api_lock(api: str) -> asyncio.Semaphore:
     per_loop = _LOCKS.setdefault(asyncio.get_running_loop(), {})
     if api not in per_loop:
-        per_loop[api] = asyncio.Semaphore(API_CONCURRENCY.get(api, 1))
+        per_loop[api] = asyncio.Semaphore(1)
     return per_loop[api]
 
 
@@ -496,13 +335,6 @@ class ReferenceAuditor(BaseDetector):
         ref = parse_paper(claim)
         if len(normalize_text(ref.title)) < 6:
             return None  # can't tell what to look up → say nothing (long-chat fix)
-        if not looks_like_citation(claim, ref):
-            return None  # a quoted phrase in prose, not a paper (QA C7: Perl's "glue language")
-        m = _ARXIV_ID.search(f"{claim.quote} {claim.normalized}")
-        if m:
-            by_id = await self._check_arxiv_id(m.group(1), claim, ref, session)
-            if by_id is not None:
-                return by_id
 
         # All three searches at once; each is cached per title so a paper cited twice is looked
         # up once. return_exceptions=True: one API failing must not sink the others.
@@ -512,31 +344,12 @@ class ReferenceAuditor(BaseDetector):
             "Semantic Scholar": self.cached(session, f"s2:{key}", lambda: self._search_s2(ref)),
             "OpenAlex": self.cached(session, f"openalex:{key}", lambda: self._search_openalex(ref)),
         }
-        if wants_arxiv(claim, ref):
-            searches["arXiv"] = self.cached(session, f"arxiv:{key}", lambda: self._search_arxiv(ref))
-        tasks = {name: asyncio.ensure_future(coro) for name, coro in searches.items()}
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + PAPER_BUDGET_S
-        pending = set(tasks.values())
-        while pending:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                break
-            _, pending = await asyncio.wait(
-                pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED
-            )
-            if self._full_match(ref, self._answered(tasks)):
-                break  # one database already confirms the paper: don't wait for the rest
-        # Slow searches keep running in the background and fill the cache for later claims.
-        answered = self._answered(tasks)
-        still_waiting = [name for name, t in tasks.items() if not t.done()]
-        if not ref.quoted:
-            return self._shorthand_result(ref, answered)
+        results = await asyncio.gather(*searches.values(), return_exceptions=True)
+        answered: dict[str, list[Candidate]] = {
+            name: res for name, res in zip(searches, results) if not isinstance(res, BaseException)
+        }
         if not answered:
-            if still_waiting:
-                return self.result("unverified", 0.3, "The paper databases didn't answer in time.")
-            errors = [t.exception() for t in tasks.values() if not t.cancelled()]
-            raise ConnectionError(f"all paper databases unavailable ({errors[0]!r})")
+            raise ConnectionError(f"all paper databases unavailable ({results[0]!r})")
 
         candidates = [c for cands in answered.values() for c in cands]
         scored = sorted(
@@ -566,17 +379,10 @@ class ReferenceAuditor(BaseDetector):
             for score, c in scored
             if score >= TITLE_MATCH and ref.surnames and self._authors_ok(ref, c) and c.year
         ]
-        # Re-registrations are RECENT records of OLD papers (Crossref and OpenAlex list the
-        # 2017 transformer paper as 2025). A citation that predates records which are
-        # themselves old is just a wrong year: QA found BERT cited as "2015" passing because
-        # every record said 2019. So only accept "later record" when all matching records are
-        # recent.
-        recent = _this_year() - RECENT_RECORD_YEARS
         if (
             matching
             and ref.year is not None
             and all(0 < c.year - ref.year <= MAX_LATER_RECORD_YEARS for c in matching)
-            and all(c.year >= recent for c in matching)
         ):
             c = min(matching, key=lambda m: m.year)
             return self.result(
@@ -613,27 +419,7 @@ class ReferenceAuditor(BaseDetector):
                 [Evidence(source=best.source, url=best.url, snippet=snippet(self._cite(best)))],
             )
 
-        # 4) Every source that answered found nothing close → no such paper. Only say so when
-        #    at least two databases answered, or none is still pending: a real arXiv-only paper
-        #    can be missing from Crossref while the slower OpenAlex would have found it.
-        if still_waiting and len(answered) < 2:
-            return self.result(
-                "unverified",
-                0.5,
-                f"No match in {_join_or(list(answered))} yet; "
-                + f"{_join_or(still_waiting)} didn't answer in time.",
-            )
-        failed = [n for n, t in tasks.items() if t.done() and n not in answered]
-        if len(answered) < 2 and failed:
-            # QA (Part B, B1.1): Semantic Scholar and OpenAlex both errored, Crossref alone found
-            # nothing, and a real arXiv survey went red. A database that FAILED is not one that
-            # searched and found nothing, and Crossref alone misses most arXiv preprints.
-            return self.result(
-                "unverified",
-                0.5,
-                f"No match in {_join_or(list(answered))}; "
-                + f"{' and '.join(failed)} couldn't be searched, so this isn't settled.",
-            )
+        # 4) Every source that answered found nothing close → no such paper.
         evidence = [self._not_found_evidence(src, ref, cands) for src, cands in answered.items()]
         # More independent databases agreeing "no such paper" → more confident.
         confidence = {1: 0.85, 2: 0.92}.get(len(answered), 0.95)
@@ -644,91 +430,6 @@ class ReferenceAuditor(BaseDetector):
             + _join_or(list(answered))
             + ".",
             evidence,
-        )
-
-    async def _check_arxiv_id(
-        self, arxiv_id: str, claim: Claim, ref: PaperRef, session: SessionContext
-    ) -> DetectorResult | None:
-        """An arXiv ID is the most precise reference there is: look it up directly.
-        None = lookup failed → fall back to the title search."""
-        try:
-            entries = await self.cached(
-                session, f"arxiv-id:{arxiv_id}", lambda: self._fetch_arxiv_id(arxiv_id)
-            )
-        except httpx.HTTPError:
-            return None
-        link = f"https://arxiv.org/abs/{arxiv_id}"
-        if not entries:
-            return self.result(
-                "contradicted",
-                0.9,
-                f"arXiv has no paper with the ID {arxiv_id}.",
-                [Evidence(source="arXiv", url=link, snippet=f"arXiv:{arxiv_id} not found")],
-            )
-        e = entries[0]
-        claimed = content_words(f"{claim.quote} {claim.normalized}") - {"arxiv", "preprint"}
-        topical = bool(content_words(e.title) & claimed) or (
-            bool(ref.surnames) and self._authors_ok(ref, e)
-        )
-        cite = Evidence(source="arXiv", url=link, snippet=snippet(self._cite(e)))
-        if not topical:
-            return self.result(
-                "unverified",
-                0.6,
-                f'arXiv:{arxiv_id} exists, but it is "{snippet(e.title, 100)}".',
-                [cite],
-            )
-        if ref.year is not None and e.year is not None and abs(ref.year - e.year) > YEAR_TOLERANCE:
-            return self.result(
-                "unverified", 0.6, f"arXiv:{arxiv_id} is real, but it was posted in {e.year}.", [cite]
-            )
-        return self.result(
-            "supported", 0.95, f'arXiv:{arxiv_id} is "{snippet(e.title, 100)}" ({e.year}).', [cite]
-        )
-
-    async def _fetch_arxiv_id(self, arxiv_id: str) -> list[Candidate]:
-        resp = await self._api_get("arxiv", ARXIV_URL, params={"id_list": arxiv_id})
-        return _arxiv_candidates(resp.text)
-
-    def _shorthand_result(
-        self, ref: PaperRef, answered: dict[str, list[Candidate]]
-    ) -> DetectorResult | None:
-        """A shorthand mention can be CONFIRMED (a record by those authors, that year, whose title
-        contains the short name) but never called fake: without the real title, "not found"
-        only means we searched for the wrong words."""
-        want = content_words(ref.title)
-        for cands in answered.values():
-            for c in cands:
-                if (
-                    self._authors_ok(ref, c)
-                    and self._year_ok(ref, c)
-                    and want
-                    and want <= content_words(c.title)
-                ):
-                    return self.result(
-                        "supported",
-                        0.85,
-                        f"Found in {c.source}: a {c.year or ''} paper by "
-                        f"{', '.join(c.surnames[:2])} matching \"{snippet(ref.title, 60)}\".",
-                        [Evidence(source=c.source, url=c.url, snippet=snippet(self._cite(c)))],
-                    )
-        return None
-
-    @staticmethod
-    def _answered(tasks: dict[str, asyncio.Future]) -> dict[str, list[Candidate]]:
-        out = {}
-        for name, t in tasks.items():
-            if t.done() and not t.cancelled() and t.exception() is None:
-                out[name] = t.result()
-        return out
-
-    def _full_match(self, ref: PaperRef, answered: dict[str, list[Candidate]]) -> bool:
-        return any(
-            similarity(ref.title, c.title) >= TITLE_MATCH
-            and self._authors_ok(ref, c)
-            and self._year_ok(ref, c)
-            for cands in answered.values()
-            for c in cands
         )
 
     @staticmethod
@@ -758,26 +459,10 @@ class ReferenceAuditor(BaseDetector):
         elif source == "OpenAlex":
             url = f"{OPENALEX_URL}?{urlencode({'search': ref.title})}"
             text = f"No matching work (best title match {best:.2f})"
-        elif source == "arXiv":
-            url = f"{ARXIV_SEARCH_URL}?{urlencode({'query': ref.title, 'searchtype': 'title'})}"
-            text = f"No matching preprint (best title match {best:.2f})"
         else:
             url = None
             text = f"No paper with a similar title (best match {best:.2f})"
         return Evidence(source=source, url=url, snippet=text)
-
-    async def _search_arxiv(self, ref: PaperRef) -> list[Candidate]:
-        # Title words ANDed (not an exact phrase), so a slightly misquoted real title still
-        # comes back and the usual similarity scoring decides.
-        words = sorted(content_words(ref.title), key=len, reverse=True)[:8]
-        if not words:
-            return []
-        params = {
-            "search_query": " AND ".join(f"ti:{w}" for w in words),
-            "max_results": SEARCH_ROWS,
-        }
-        resp = await self._api_get("arxiv", ARXIV_URL, params=params)
-        return _arxiv_candidates(resp.text)
 
     async def _search_crossref(self, ref: PaperRef) -> list[Candidate]:
         params: dict[str, Any] = {
@@ -820,39 +505,23 @@ class ReferenceAuditor(BaseDetector):
         mailto = os.environ.get("CROSSREF_MAILTO")  # OpenAlex has the same "polite pool" idea
         if mailto:
             base["mailto"] = mailto
-        key = os.environ.get("OPENALEX_API_KEY")
-        if key:  # free key, 10x the keyless daily budget (openalex.org → settings)
-            base["api_key"] = key
         title_filter = re.sub(r"[,:|]", " ", ref.title)  # these characters break filter syntax
         queries = [
             {**base, "search": ref.title},
             {**base, "filter": f"title.search:{title_filter}", "sort": "cited_by_count:desc"},
         ]
         candidates: list[Candidate] = []
-        errors: list[Exception] = []
         for params in queries:
-            try:
-                resp = await self._api_get("openalex", OPENALEX_URL, params=params)
-            except httpx.HTTPError as exc:  # one query failing mustn't sink the other
-                errors.append(exc)
-                continue
+            resp = await self._api_get("openalex", OPENALEX_URL, params=params)
             candidates.extend(_openalex_candidates(resp.json()))
-        if errors and len(errors) == len(queries):
-            raise errors[0]
         return candidates
 
     async def _api_get(self, api: str, url: str, **kwargs: Any) -> httpx.Response:
-        """GET with one-at-a-time access per API and a single retry on 429 / 502-504.
-
-        QA (Part B): OpenAlex answered 503 on back-to-back lookups; a short retry usually gets
-        through, and a still-failing database is reported as "couldn't be searched" (amber)."""
+        """GET with one-at-a-time access per API and a single retry on 429."""
         async with _api_lock(api), self._client() as client:
             resp = await client.get(url, **kwargs)
             if resp.status_code == 429:
                 await asyncio.sleep(_retry_after(resp))
-                resp = await client.get(url, **kwargs)
-            elif resp.status_code in (502, 503, 504):
-                await asyncio.sleep(RETRY_5XX_S)
                 resp = await client.get(url, **kwargs)
             resp.raise_for_status()
             return resp
@@ -866,19 +535,7 @@ class ReferenceAuditor(BaseDetector):
         if not host or _is_private_host(host):
             return self.result("unverified", 0.3, "Local or private link — not checked.")
 
-        doi = doi_in(url)
-        if doi:
-            by_doi = await self._check_doi(doi, claim, session)
-            if by_doi is not None:
-                return by_doi
-
         page = await self.cached(session, f"url:{url}", lambda: self._fetch(url))
-        trimmed = unglued(url)
-        if trimmed and page.get("kind") == "http" and page.get("status") in (404, 410):
-            # Maybe the next sentence got glued on: try the link without it.
-            retry = await self.cached(session, f"url:{trimmed}", lambda: self._fetch(trimmed))
-            if retry.get("kind") == "http" and retry.get("status", 404) < 400:
-                url, page = trimmed, retry
         ev_url = page.get("final_url") or url
 
         if page["kind"] == "dns":
@@ -903,12 +560,7 @@ class ReferenceAuditor(BaseDetector):
                 f"The link returns {status} Not Found — the page doesn't exist.",
                 [Evidence(source="HTTP", url=ev_url, snippet=f"HTTP {status}")],
             )
-        if status in (401, 403):
-            # QA (demo run): real journal pages (ACS, Company of Biologists) answer bots with
-            # 403, and every correct DOI link went amber. A refusal proves the page exists
-            # more than it proves anything wrong → say nothing.
-            return None
-        if status >= 400:  # 429/5xx: rate limits or outages, not proof of fakeness
+        if status >= 400:  # 401/403/429/5xx: bot blocking or outages, not proof of fakeness
             return self.result(
                 "unverified",
                 0.4,
@@ -930,77 +582,6 @@ class ReferenceAuditor(BaseDetector):
             "The link works" + (" and the page contains the quoted text." if passage else "."),
             [Evidence(source="HTTP", url=ev_url, snippet=f"HTTP {status}")],
         )
-
-    async def _check_doi(
-        self, doi: str, claim: Claim, session: SessionContext
-    ) -> DetectorResult | None:
-        """Look a DOI up in the registries instead of fetching the publisher page.
-
-        Crossref knows most journal DOIs (and their titles); doi.org's handle API knows every DOI
-        (DataCite, arXiv …). Real DOI whose title matches the cited paper → green; real DOI whose
-        title is a different paper → red (the classic made-up citation); no such DOI → red.
-        None = registries unreachable → fall back to fetching the link."""
-        link = f"https://doi.org/{doi}"
-        try:
-            record = await self.cached(session, f"doi:{doi.lower()}", lambda: self._crossref_doi(doi))
-        except httpx.HTTPError:
-            return None
-        if record is None:
-            try:
-                exists = await self.cached(
-                    session, f"doi-handle:{doi.lower()}", lambda: self._doi_registered(doi)
-                )
-            except httpx.HTTPError:
-                return None
-            if not exists:
-                return self.result(
-                    "contradicted",
-                    0.92,
-                    f"The DOI {doi} doesn't exist: neither doi.org nor Crossref knows it.",
-                    [Evidence(source="doi.org", url=link, snippet=f"DOI {doi} not registered")],
-                )
-            return self.result(
-                "supported", 0.8, f"The DOI {doi} is registered.",
-                [Evidence(source="doi.org", url=link, snippet=f"DOI {doi} is registered")],
-            )
-        cite = Evidence(source="Crossref", url=link, snippet=snippet(self._cite(record)))
-        context = citation_context(session, claim, doi)
-        cited = content_words(context)
-        real = content_words(record.title)
-        if real and len(cited) >= 8:
-            overlap = len(real & cited) / len(real)
-            if overlap < 0.25 and not (
-                record.surnames and any(normalize_text(n) in normalize_text(context)
-                                        for n in record.surnames[:3])
-            ):
-                return self.result(
-                    "contradicted",
-                    0.85,
-                    f'The DOI {doi} is real, but it belongs to a different paper: '
-                    f'"{snippet(record.title, 110)}".',
-                    [cite],
-                )
-        return self.result(
-            "supported", 0.9, f'The DOI is real: "{snippet(record.title, 110)}".', [cite]
-        )
-
-    async def _crossref_doi(self, doi: str) -> Candidate | None:
-        try:
-            resp = await self._api_get("crossref", f"{CROSSREF_URL}/{urlquote(doi, safe='/')}")
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return None
-            raise
-        items = _crossref_candidates({"message": {"items": [resp.json().get("message", {})]}})
-        return items[0] if items else None
-
-    async def _doi_registered(self, doi: str) -> bool:
-        async with self._client() as client:
-            resp = await client.get(DOI_HANDLE_URL.format(doi=urlquote(doi, safe="/")))
-        if resp.status_code == 404:
-            return False
-        resp.raise_for_status()
-        return resp.json().get("responseCode") == 1
 
     async def _fetch(self, url: str) -> dict[str, Any]:
         """GET the page (5 s timeout, redirects followed). Returns a cacheable dict."""

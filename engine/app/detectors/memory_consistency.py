@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from app.detectors.base import BaseDetector, one_object, snippet
+from app.detectors.base import BaseDetector, snippet
 from app.detectors.claim_gate import gate
 from app.learning import memory
 from app.learning.memory import USER_KINDS, MemoryCard
@@ -58,15 +58,6 @@ Rules:
 - Use only the memories, not outside knowledge.
 - Same SUBJECT required: a memory about the Eiffel Tower's completion year says nothing about
   its height.
-- Rounding or measurement precision is NOT a contradiction (8,849 m vs "about 8,848 m";
-  330 m vs 330.5 m). Different years, names or clearly different numbers ARE.
-- Leaving out a detail is NOT a contradiction: a claim that states PART of what a memory says
-  ("returns a new DataFrame; with inplace=True it modifies the original" vs a memory that also
-  adds "and returns None") is consistent.
-- Same SCOPE required: a figure for a different route, endpoint, period or version ("Tokyo to
-  Shin-Osaka" vs "Tokyo to Kyoto") is unrelated, not a contradiction.
-- Explaining that a user's request or rule CAN'T be met, correcting the user, or warning
-  them ("requests.get has no retry option; you need a Session") is NOT a contradiction.
 - Talking ABOUT something is not violating it ("pandas 2.0 added X" is not a contradiction of
   "user is on pandas 1.5" — but CODE that requires 2.0 for a 1.5 user is).
 - "explanation": one short sentence for the user. Start with "You told Claude …" for user
@@ -180,9 +171,6 @@ def per_minute(q: Quantity) -> Quantity:
     return q
 
 
-_DURATIONS = {"ms", "seconds", "minutes", "hours", "days"}
-
-
 def number_violation(card: MemoryCard, claim_text: str) -> str | None:
     """Plain-English violation if the claim exceeds an upper limit (or undercuts a minimum) the
     user set on the same unit. None when there's nothing comparable."""
@@ -192,12 +180,6 @@ def number_violation(card: MemoryCard, claim_text: str) -> str | None:
     if not (upper or lower):
         return None
     for cq in map(per_minute, quantities(card.text)):
-        if cq.unit in _DURATIONS:
-            # A bare duration in a rule is ambiguous: a pacing gap ("0.6 s between calls"), a
-            # timeout, a back-off. Comparing it with any other duration ("fall back to 60 s if
-            # Retry-After is missing") made a correct reply red in the long-chat QA. Rates
-            # (requests/minute), money and sizes stay checked; durations go to the judge.
-            continue
         for q in map(per_minute, quantities(claim_text)):
             # A total cap ("budget $500") also bounds a rate ("$1,200 per month").
             same = q.unit == cq.unit or ("/" not in cq.unit and q.unit.split("/")[0] == cq.unit)
@@ -369,23 +351,10 @@ class MemoryConsistency(BaseDetector):
         # and corrections are about the WORLD, so they only apply to world-fact claims about the
         # SAME subject; the user's own rules apply to advice and code too.
         hits = await memory.relevant(uid, text, k=RECALL_K)
-        # A statement about the world can't "break" a user's RULE; only code and advice can.
-        # QA (demo run): the user asked for retries "using only requests.get", Claude correctly
-        # said that's impossible and explained HTTPAdapter, and the true explanation went red as
-        # "you told Claude to use only requests.get". Rules apply to code/advice; world facts are
-        # checked against the user's FACTS and against verified facts only.
-        # Hard numbers ("500 requests per minute" vs a 100/min limit) are still always checked.
-        # Only the model gate can tell "flights cost $1,000" (world fact) from "I set it to 500
-        # per minute" (Claude's own plan); the keyword fallback keeps every rule in play.
-        rules_apply = bool(claim.code) or g.kind != "world_fact" or g.source != "llm"
         cards = [
             c for c, _ in hits
             if c.kind in USER_KINDS
-            or (
-                c.kind not in USER_KINDS
-                and g.kind in ("world_fact", "unknown")
-                and same_subject(c, claim, g.subject)
-            )
+            or (g.kind in ("world_fact", "unknown") and same_subject(c, claim, g.subject))
         ]
         if claim.code:
             # Code rarely shares words with "Uses Python 3.8" or "on pandas 1.5", so similarity
@@ -396,31 +365,11 @@ class MemoryConsistency(BaseDetector):
 
         # a/b: deterministic checks first — no LLM, instant.
         for card in cards:
-            # A world fact ("flights to Tokyo cost about $1,000") can't break a user's budget;
-            # only a plan, advice or code can. Heuristic-gate claims ("unknown") stay checked.
-            why = (number_violation(card, text) if rules_apply else None) or python_violation(
-                card, claim.code
-            )
+            why = number_violation(card, text) or python_violation(card, claim.code)
             if why:
                 return self.result("contradicted", 0.93, why, [self._evidence(card)])
 
-        # An earlier VERIFIED fact already says what this claim says → memory has nothing to
-        # object to (even if some other card disagrees: then memory disagrees with itself, and
-        # the web detectors decide). Checked against the whole ledger, not just the top-3 recall.
-        if not claim.code and g.kind in ("world_fact", "unknown"):
-            for c in await memory.list_cards(uid):
-                if (
-                    c.kind == "verified_fact"
-                    and not getattr(c, "superseded_by", None)
-                    and memory.echoes(c.text, claim.normalized)
-                ):
-                    return None
-
-        # c: judge. A world fact is judged against facts, never against the user's rules.
-        if not rules_apply:
-            cards = [c for c in cards if c.kind != "constraint"]
-            if not cards:
-                return None
+        # c: judge.
         data = await self.cached(
             session, f"judge:{claim.claim_id}", lambda: self._judge(claim, cards)
         )
@@ -469,12 +418,11 @@ class MemoryConsistency(BaseDetector):
             body = f"CLAIM: {claim.normalized[:500]}"
             if claim.quote and claim.quote.strip() != claim.normalized.strip():
                 body += f"\n(original wording: {claim.quote[:300]})"
-        raw = await (self.judge or complete_json)(
+        data = await (self.judge or complete_json)(
             JUDGE_SYSTEM, f"{body}\n\nUSER MEMORIES:\n{numbered}"
         )
-        data = one_object(raw)
-        if data is None:
-            raise TypeError(f"judge returned {type(raw).__name__}, expected an object")
+        if not isinstance(data, dict):
+            raise TypeError(f"judge returned {type(data).__name__}, expected an object")
         return data
 
     def _to_result(self, data: dict[str, Any], cards: list[MemoryCard]) -> DetectorResult | None:

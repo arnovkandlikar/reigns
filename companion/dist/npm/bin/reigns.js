@@ -82,16 +82,18 @@ function ask(question, { secret = false } = {}) {
     if (readerClosed) return resolve('');
     const rl = getReader();
     const write = rl._writeToOutput;
-    // Print the question ourselves so it always shows (a real terminal redraws the prompt in
-    // pieces, and filtering those hid the question), then hide only what the user types.
-    process.stdout.write(secret && process.stdin.isTTY ? `${question}(typing is hidden) ` : question);
-    if (secret) rl._writeToOutput = () => {};
+    if (secret) {
+      // Don't echo keys to the terminal.
+      rl._writeToOutput = (s) => {
+        if (s.includes(question)) rl.output.write(s);
+      };
+    }
     pendingAnswers.push(resolve);
-    rl.question('', (answer) => {
+    rl.question(question, (answer) => {
       pendingAnswers.splice(pendingAnswers.indexOf(resolve), 1);
       if (secret) {
         rl._writeToOutput = write;
-        process.stdout.write(answer ? '\u2713\n' : '\n');  // confirm without showing the key
+        if (process.stdin.isTTY) process.stdout.write('\n');
       }
       resolve(answer.trim());
     });
@@ -161,24 +163,10 @@ function installEngineDeps(python) {
   run(pip, ['install', '--quiet', path.join(SRC, 'engine')]);
 }
 
-/** The saved Anthropic key, or '' if there's no settings file or the key is blank. */
-function savedAnthropicKey() {
-  if (!fs.existsSync(ENV_FILE)) return '';
-  const line = fs.readFileSync(ENV_FILE, 'utf8').split('\n').find((l) => l.trim().startsWith('ANTHROPIC_API_KEY='));
-  return line ? line.split('=').slice(1).join('=').trim() : '';
-}
-
 async function writeKeys({ force = false } = {}) {
-  // Reuse saved keys only if there really is an Anthropic key (an earlier, half-finished install
-  // can leave the file without one). `install --keys` always asks.
-  if (!force && !flags.has('--keys') && savedAnthropicKey()) {
-    step('API keys');
-    say(`  Using the keys already saved on this Mac (${ENV_FILE}).`);
-    say('  To change them: npx reigns-work keys');
+  if (fs.existsSync(ENV_FILE) && !force) {
+    say('\nKeeping your saved API keys (change them with: npx reigns-work keys).');
     return;
-  }
-  if (!process.stdin.isTTY) {
-    say('\n  (No interactive terminal: reading the keys from input.)');
   }
   step('API keys (saved only on this Mac, in ~/.reigns/.env)');
   say('  Anthropic is required. Get one at https://console.anthropic.com (you pay Anthropic for your own use).');
@@ -342,8 +330,7 @@ async function uninstall() {
 function help() {
   say(`reigns-work ${VERSION} — the Reigns desktop horse for Claude (macOS)
 
-  npx reigns-work install     install the app + engine (asks for your API keys;
-                              add --keys to re-enter keys that are already saved)
+  npx reigns-work install     install the app + engine (asks for your API keys)
   npx reigns-work update      update, keeping your keys
   npx reigns-work keys        change your API keys
   npx reigns-work start | stop | restart | status
