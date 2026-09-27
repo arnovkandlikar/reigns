@@ -32,7 +32,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.detectors.base import BaseDetector, http_client, snippet
-from app.detectors.claim_gate import requested_untrue
 from app.detectors.reference_auditor import package_exists
 from app.models import Claim, DetectorResult, Evidence, SessionContext
 
@@ -115,145 +114,21 @@ def _dotted(node: ast.AST) -> list[str] | None:
     return None
 
 
-# Functions whose return type is well known, so calls on the result can be checked:
-# `df = pd.read_csv(...)` → df is a DataFrame → `df.interpolate_missing()` is checkable.
-FACTORY_RETURNS = {
-    **{
-        f"pandas.{f}": "pandas.DataFrame"
-        for f in (
-            "read_csv",
-            "read_excel",
-            "read_json",
-            "read_parquet",
-            "read_sql",
-            "read_table",
-            "read_feather",
-            "read_html",
-            "merge",
-            "pivot_table",
-            "crosstab",
-            "json_normalize",
-        )
-    },
-    **{
-        f"requests.{f}": "requests.Response"
-        for f in (
-            "get",
-            "post",
-            "put",
-            "patch",
-            "delete",
-            "head",
-            "options",
-            "request",
-        )
-    },
-    **{
-        f"numpy.{f}": "numpy.ndarray"
-        for f in (
-            "array",
-            "zeros",
-            "ones",
-            "empty",
-            "arange",
-            "linspace",
-            "full",
-            "eye",
-        )
-    },
-}
-# Methods that return the same type as their receiver (so the variable keeps its type).
-SAME_TYPE_METHODS = {
-    "pandas.DataFrame": {
-        "dropna",
-        "fillna",
-        "interpolate",
-        "sort_values",
-        "sort_index",
-        "reset_index",
-        "set_index",
-        "rename",
-        "drop",
-        "copy",
-        "assign",
-        "query",
-        "head",
-        "tail",
-        "drop_duplicates",
-        "astype",
-        "merge",
-        "join",
-        "ffill",
-        "bfill",
-        "replace",
-        "round",
-        "sample",
-        "filter",
-        "loc",
-        "iloc",
-    },
-}
-_FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
-
-
-def _scoped_nodes(tree: ast.AST):
-    """Yield (node, scope) for every node; scope = the enclosing function (or module) node.
-    Names are resolved per scope, so `df` in one function never types `df` in another."""
-    stack = [(tree, tree)]
-    while stack:
-        node, scope = stack.pop()
-        yield node, scope
-        inner = node if isinstance(node, _FUNCTION_NODES) else scope
-        for child in reversed(list(ast.iter_child_nodes(node))):
-            stack.append((child, inner))
-
-
 def parse_code(code: str) -> ParsedCode:
     """Raises SyntaxError for code that isn't valid Python."""
     tree = ast.parse(code)
     out = ParsedCode()
-    # (scope id, variable) → [(line, resolved type path or None)], in source order. Flow-
-    # sensitive: `df = df.interpolate_missing()` is checked with df's PREVIOUS type, and a
-    # reassignment to something unknown stops later checks instead of guessing.
-    bindings: dict[tuple[int, str], list[tuple[int, list[str] | None]]] = {}
+    instances: dict[str, list[str]] = {}  # var → resolved class path, from `x = mod.Class()`
 
-    def lookup(scope: ast.AST, name: str, line: int) -> list[str] | None:
-        seq = bindings.get((id(scope), name))
-        if seq is None and scope is not tree:
-            seq = bindings.get((id(tree), name))  # not bound in the function → module level
-        before = [t for ln, t in (seq or []) if ln < line]
-        return before[-1] if before else None
-
-    def resolve(chain: list[str], scope: ast.AST, line: int) -> list[str] | None:
+    def resolve(chain: list[str]) -> list[str] | None:
         head, rest = chain[0], chain[1:]
         if head in out.modules:
             return out.modules[head].split(".") + rest
         if head in out.names:
             return out.names[head].split(".") + rest
-        typed = lookup(scope, head, line)
-        if typed:
-            return [*typed, *rest]
+        if head in instances:
+            return [*instances[head], *rest]
         return None
-
-    def value_type(value: ast.AST, scope: ast.AST, line: int) -> list[str] | None:
-        if not isinstance(value, ast.Call):
-            return None
-        chain = _dotted(value.func)
-        resolved = resolve(chain, scope, line) if chain else None
-        if not resolved:
-            return None
-        path = ".".join(resolved)
-        if path in FACTORY_RETURNS:
-            return FACTORY_RETURNS[path].split(".")
-        receiver = ".".join(resolved[:-1])
-        if resolved[-1] in SAME_TYPE_METHODS.get(receiver, ()):
-            return resolved[:-1]
-        if resolved[-1][:1].isupper():  # CamelCase → probably a class: `s = requests.Session()`
-            return resolved
-        return None
-
-    def bind(scope: ast.AST, name: str, line: int, typ: list[str] | None) -> None:
-        bindings.setdefault((id(scope), name), []).append((line, typ))
 
     # Pass 1: imports (anywhere in the file, including inside functions).
     for node in ast.walk(tree):
@@ -271,54 +146,30 @@ def parse_code(code: str) -> ParsedCode:
                 if a.name != "*":
                     out.names[a.asname or a.name] = f"{node.module}.{a.name}"
 
-    # Pass 2: variable bindings, in source order, per scope.
-    events = []
-    for node, scope in _scoped_nodes(tree):
-        if isinstance(node, _FUNCTION_NODES):
-            args = node.args
-            for a in [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]:
-                if a is not None:  # parameters shadow outer names: type unknown
-                    events.append((node.lineno, 0, node, a.arg, None))
-        elif isinstance(node, ast.Assign):
-            for t in node.targets:
-                events.append((node.lineno, 1, scope, t, node.value))
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            events.append((node.lineno, 1, scope, node.target, node.value))
-        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
-            events.append(
-                (node.context_expr.lineno, 1, scope, node.optional_vars, node.context_expr)
-            )
-        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-            events.append(
-                (getattr(node, "lineno", 0) or node.target.lineno, 1, scope, node.target, None)
-            )
-    for line, _, scope, target, value in sorted(events, key=lambda e: (e[0], e[1])):
-        if isinstance(target, str):  # function parameter
-            bind(scope, target, line, None)
-            continue
-        names = [n.id for n in ast.walk(target) if isinstance(n, ast.Name)]
-        if isinstance(target, ast.Name):
-            typ = value_type(value, scope, line) if value is not None else None
-            bind(scope, target.id, line, typ)
-        else:
-            for n in names:  # tuple unpacking, attributes…: unknown
-                bind(scope, n, line, None)
+    # Pass 2: simple instances, in source order: `s = requests.Session()`, `with X() as s`.
+    for node in ast.walk(tree):
+        target, value = None, None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.withitem):
+            target, value = node.optional_vars, node.context_expr
+        if isinstance(target, ast.Name) and isinstance(value, ast.Call):
+            chain = _dotted(value.func)
+            resolved = resolve(chain) if chain else None
+            if resolved and resolved[-1][:1].isupper():  # CamelCase → probably a class
+                instances[target.id] = resolved
 
     # Pass 3: calls.
-    for node, scope in _scoped_nodes(tree):
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         chain = _dotted(node.func)
-        resolved = resolve(chain, scope, node.lineno) if chain else None
+        resolved = resolve(chain) if chain else None
         if not resolved:
             continue
-        # Messages use the name as written (pd.read_csv), except for variables, where the
+        # Messages use the name as written (pd.read_csv), except for instances, where the
         # variable name means nothing to the user (s.get → Session.get).
-        head = chain[0]
-        if head in out.modules or head in out.names:
-            shown = chain
-        else:
-            shown = [resolved[len(resolved) - len(chain)], *chain[1:]]
+        shown = chain if chain[0] not in instances else [instances[chain[0]][-1], *chain[1:]]
         out.calls.append(
             Call(
                 chain=resolved,
@@ -396,17 +247,6 @@ def _dynamic(obj: Any) -> bool:
     )
 
 
-def _columns_only_getattr(obj: Any) -> bool:
-    """pandas DataFrame/Series invent attributes only for COLUMNS (df.price), and a column is
-    never callable, so a *called* missing method (df.interpolate_missing()) is still an error."""
-    try:
-        from pandas.core.generic import NDFrame
-    except Exception:  # noqa: BLE001 — pandas not installed
-        return False
-    cls = obj if inspect.isclass(obj) else type(obj)
-    return inspect.isclass(cls) and issubclass(cls, NDFrame)
-
-
 def _signature(obj: Any) -> inspect.Signature | None:
     try:
         return inspect.signature(obj)
@@ -450,8 +290,7 @@ def check_call(call: Call) -> Issue | None:
     lib = library_version(root)
     parent, missing = _walk(call.chain)
     if missing != -1:
-        called = missing == len(call.chain) - 1  # the missing name is the one being called
-        if _dynamic(parent) and not (called and _columns_only_getattr(parent)):
+        if _dynamic(parent):
             return None
         name = call.chain[missing]
         close = suggest(name, [n for n in dir(parent) if not n.startswith("_")])
@@ -543,8 +382,6 @@ class CodeApiChecker(BaseDetector):
         self.client_factory = client_factory  # tests inject a mock for the PyPI lookups
 
     async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
-        if requested_untrue(session, claim):
-            return None  # "write code with a wrong API call": broken on purpose
         code = claim.code or claim.quote
         try:
             data = await self.cached(

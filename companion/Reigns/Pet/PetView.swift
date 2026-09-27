@@ -225,29 +225,24 @@ private struct HorseFace: View {
 
     private var isMarley: Bool { character == .marley }
 
-    /// Outline for head and ears: Marley's soft pink, Charlie a subtle darker edge of his coat.
-    private var outline: Color {
-        isMarley ? Color(red: 0.93, green: 0.70, blue: 0.84) : Color.black.opacity(0.22)
-    }
-
     var body: some View {
         let palette = HorsePalette(expression, character: character)
         ZStack {
-            // Ears sit behind the head, low enough that their bases overlap it, tilted outward.
-            HStack(spacing: 14) {
-                Ear(palette: palette, outline: outline).rotationEffect(.degrees(-12), anchor: .bottom)
-                Ear(palette: palette, outline: outline).rotationEffect(.degrees(12), anchor: .bottom)
+            // Ears sit behind the head.
+            HStack(spacing: 18) {
+                Ear(palette: palette, outlined: isMarley)
+                Ear(palette: palette, outlined: isMarley)
             }
-            .offset(y: -30)
+            .offset(y: -33)
 
             // Head: tall rounded shape.
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .fill(palette.coat)
                 .overlay {
-                    // Soft outline (both pets share the art style; it also keeps Marley's white
-                    // coat readable on light backgrounds).
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .strokeBorder(outline, lineWidth: 1)
+                    if isMarley {  // soft outline so the white coat reads on light backgrounds
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .strokeBorder(Color(red: 0.93, green: 0.70, blue: 0.84), lineWidth: 1)
+                    }
                 }
                 .frame(width: 46, height: 70)
                 .offset(y: 6)
@@ -257,7 +252,10 @@ private struct HorseFace: View {
                 UnicornHorn().frame(width: 8, height: 19).offset(y: -39)
                 MarleyMane()
             } else {
-                CharlieMane(time: motion.time)
+                Ellipse()
+                    .fill(HorsePalette.mane)
+                    .frame(width: 20, height: 14)
+                    .offset(y: -26)
             }
 
             // Muzzle with nostrils.
@@ -308,54 +306,6 @@ private struct HorseFace: View {
 }
 
 // MARK: - Marley
-
-/// Charlie's mane: a fuzzy little mohawk down the middle of his head. Lots of short hair strands
-/// fanning upward at slightly different angles and lengths (chestnut, a few golden) over a soft dark
-/// base so it reads as thick fuzz. The tips wiggle a touch. Drawn in the 64×84 horse frame.
-private struct CharlieMane: View {
-    let time: TimeInterval
-
-    private static let base = Color(red: 0.24, green: 0.12, blue: 0.05)
-    private static let shades = [Color(red: 0.36, green: 0.19, blue: 0.08),
-                                 Color(red: 0.50, green: 0.27, blue: 0.11),
-                                 Color(red: 0.30, green: 0.15, blue: 0.06),
-                                 Color(red: 0.58, green: 0.33, blue: 0.14)]
-    private static let golden = Color(red: 0.93, green: 0.70, blue: 0.36)
-    private static let strandCount = 70
-
-    /// Deterministic "random" in 0..<1 per strand, so the fuzz doesn't reshuffle each frame.
-    private static func jitter(_ i: Int, _ salt: Int) -> CGFloat {
-        let x = sin(Double(i * 12_989 + salt * 78_233)) * 43_758.5453
-        return CGFloat(x - x.rounded(.down))
-    }
-
-    var body: some View {
-        Canvas { context, _ in
-            // Soft base so the strands read as a thick tuft.
-            context.fill(Path(ellipseIn: CGRect(x: 25, y: 8, width: 14, height: 10)), with: .color(Self.base))
-
-            for i in 0..<Self.strandCount {
-                let r1 = Self.jitter(i, 1), r2 = Self.jitter(i, 2), r3 = Self.jitter(i, 3)
-                // Roots along a short arc across the top of the head; taller in the middle.
-                let across = r1 * 2 - 1                           // -1 … 1 from left to right
-                let root = CGPoint(x: 32 + across * 7, y: 16 + across * across * 2.5)
-                let length = (7.5 + r2 * 7.5) * (1 - 0.35 * across * across)
-                let angle = across * 0.55 + (r3 - 0.5) * 0.5       // fan outward, a little messy
-                let wiggle = CGFloat(sin(time * 2 * .pi / 2.4 + Double(i))) * 0.35
-                let tip = CGPoint(x: root.x + sin(angle) * length + wiggle, y: root.y - cos(angle) * length)
-                var strand = Path()
-                strand.move(to: root)
-                strand.addQuadCurve(
-                    to: tip,
-                    control: CGPoint(x: (root.x + tip.x) / 2 + (r3 - 0.5) * 2.5, y: (root.y + tip.y) / 2))
-                let color = i % 8 == 5 ? Self.golden.opacity(0.9) : Self.shades[i % Self.shades.count]
-                context.stroke(strand, with: .color(color),
-                               style: StrokeStyle(lineWidth: 1.0 + r1 * 0.8, lineCap: .round))
-            }
-        }
-        .frame(width: 64, height: 84)
-    }
-}
 
 /// Fuller forelock swept to one side, plus locks falling down both sides of the face.
 private struct MarleyMane: View {
@@ -513,12 +463,14 @@ private struct Sparkles: View {
 
 private struct Ear: View {
     let palette: HorsePalette
-    var outline: Color = .clear
+    var outlined = false
 
     var body: some View {
         ZStack {
-            Triangle().fill(palette.coat).frame(width: 15, height: 19)
-            Triangle().stroke(outline, lineWidth: 1).frame(width: 15, height: 19)
+            Triangle().fill(palette.coat).frame(width: 14, height: 18)
+            if outlined {
+                Triangle().stroke(Color(red: 0.93, green: 0.70, blue: 0.84), lineWidth: 1).frame(width: 14, height: 18)
+            }
             Triangle().fill(palette.innerEar).frame(width: 7, height: 10).offset(y: 3)
         }
     }

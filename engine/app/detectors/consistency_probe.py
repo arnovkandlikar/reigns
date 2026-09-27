@@ -29,14 +29,7 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from app.detectors.base import (
-    BaseDetector,
-    content_words,
-    looks_like_instruction,
-    normalize_text,
-    one_object,
-    snippet,
-)
+from app.detectors.base import BaseDetector, looks_like_instruction, normalize_text, snippet
 from app.detectors.claim_gate import gate
 from app.llm import LLMError, complete_json, complete_text, fast_model_name
 from app.models import Claim, DetectorResult, Evidence, SessionContext
@@ -58,16 +51,12 @@ revealing the answer. Example: claim "The first mayor of Tórshavn was Jógvan P
 The question must be answerable by someone who has NOT seen the conversation. If the claim is
 advice, an instruction, an opinion, arithmetic about the user's own setup, or only makes sense
 with earlier context ("it", "that function", "the second option"), return {"question": null}.
-Also null when the claim bundles several separate facts or hedges with a vague quantifier
-("Python borrowed from C, Unix, Modula-3 and ABC; some of these barely existed in 1980"): no
-single short answer can match it.
 Return {"question": "..."} or {"question": null}."""
 
 GROUP_SYSTEM = """You compare short answers to the same question and group them by MEANING.
 Two answers are in the same group if they give the same specific answer, even if worded
 differently ("Jógvan Poulsen" = "It was J. Poulsen"). Different names, numbers or dates are
-different groups, but numbers that differ only by rounding or precision are the SAME answer
-("8,849 m" = "8,848.86 m", "about 330 m" = "330 metres").
+different groups.
 
 You also get ORIGINAL, the answer a chatbot gave earlier. Say which group (by index) has the
 same meaning as ORIGINAL, or null if none does.
@@ -159,8 +148,6 @@ class ConsistencyProbe(BaseDetector):
     async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
         if looks_like_instruction(claim.quote):
             return None  # re-asking advice out of context only produces false alarms
-        if too_vague_to_probe(claim.normalized):
-            return None  # no single short answer can match a bundled / hedged claim
         g = await gate(claim, session, self.gate_judge)
         if not g.checkable:
             return None  # only world facts can be re-asked meaningfully
@@ -183,15 +170,10 @@ class ConsistencyProbe(BaseDetector):
 
     # ------------------------------------------------------------------ steps
     async def _question(self, claim: Claim) -> str:
-        data = one_object(
-            await self.judge(
-                QUESTION_SYSTEM,
-                f"CLAIM: {claim.normalized}",
-                max_tokens=100,
-                model=fast_model_name(),
-            )
+        data = await self.judge(
+            QUESTION_SYSTEM, f"CLAIM: {claim.normalized}", max_tokens=100, model=fast_model_name()
         )
-        if data is None:
+        if not isinstance(data, dict):
             raise LLMError("could not turn the claim into a question")
         # "" = not a standalone, checkable fact → the probe abstains (cached like a question)
         return str(data.get("question") or "").strip()
@@ -229,14 +211,11 @@ class ConsistencyProbe(BaseDetector):
             # stay on the main model: we're measuring the model the user is talking to.
             model=fast_model_name(),
         )
-        raw, verdict = verdict, one_object(verdict)
-        if verdict is None:
-            raise TypeError(f"grouping returned {type(raw).__name__}, expected an object")
+        if not isinstance(verdict, dict):
+            raise TypeError(f"grouping returned {type(verdict).__name__}, expected an object")
         groups = clean_groups(verdict.get("groups"), len(answers))
         og = verdict.get("original_group")
         original_group = og if isinstance(og, int) and 0 <= og < len(groups) else None
-        original_group = _rounding_match(claim.normalized, answers, groups, original_group)
-        original_group = _contained_match(claim.normalized, answers, groups, original_group)
         return {
             "question": question,
             "answers": answers,
@@ -280,11 +259,9 @@ class ConsistencyProbe(BaseDetector):
         original_in_majority = og is not None and sizes[og] == sizes[majority]
         agree_with_original = sizes[og] if og is not None else 0
 
-        # Plain English first (this text is shown to users and put in hand-offs), numbers after.
         summary = (
-            f"{n} samples: {agree_with_original}/{n} agree with the original answer; "
-            f"{len(groups)} distinct answer{'s' if len(groups) != 1 else ''} overall "
-            f"(normalized entropy {h:.2f})"
+            f"{n} samples → {len(groups)} different answer{'s' if len(groups) != 1 else ''} "
+            f"(normalized entropy {h:.2f}); {agree_with_original}/{n} match the original"
         )
         evidence = [
             Evidence(source="Consistency Probe", url=None, snippet=summary),
@@ -336,84 +313,6 @@ class ConsistencyProbe(BaseDetector):
             f"Asked {n} times, Claude's answers were mixed ({len(groups)} different answers).",
             evidence,
         )
-
-
-# "some of these", "barely", "many of" … : a hedged judgment, not one answer a re-ask can repeat.
-_VAGUE = re.compile(
-    r"\b(?:some|many|most|several|few|none|all) of (?:these|those|them|which)\b|\bbarely\b|"
-    r"\bto some extent\b|\bin some ways\b",
-    re.IGNORECASE,
-)
-
-
-# Estimates and generalizations: "typical 1980 home computers had 16–64 KB", "around 1984–87
-# machines grew to 256 KB–1 MB", "built in the early 1980s". Re-asking gets another reasonable
-# estimate ("64 KB"), which the probe then reads as "Claude says something else".
-_GENERAL = re.compile(
-    r"\b(?:typical(?:ly)?|usually|generally|commonly|on average|in general)\b|"
-    r"\b(?:early|mid|late)[- ](?:\d{2}|\d{4})'?s\b",
-    re.IGNORECASE,
-)
-_ESTIMATE_CUE = re.compile(
-    r"\b(?:around|about|approximately|roughly|grew to|up to|between)\b", re.IGNORECASE
-)
-_RANGE = re.compile(r"\d[\d.,]*\s*(?:[A-Za-z]{1,4}\s*)?[–—-]\s*\d")
-
-
-def too_vague_to_probe(claim_text: str) -> bool:
-    """C7 (Part C): "Python borrowed from C, Unix, Modula-3, and ABC; some of these barely
-    existed in 1980" was re-asked, every sample said "C and Unix", and the probe called the
-    claim a one-off → red on a fine answer. Hedged or multi-fact claims have no single answer,
-    and neither do estimates (a generalization, or an approximate range). A precise range like
-    "the Ming dynasty (1368–1644)" is still probed."""
-    if _VAGUE.search(claim_text) or _GENERAL.search(claim_text):
-        return True
-    if _RANGE.search(claim_text) and _ESTIMATE_CUE.search(claim_text):
-        return True
-    clauses = [c for c in re.split(r";", claim_text) if len(c.split()) >= 3]
-    return len(clauses) >= 2
-
-
-def _contained_match(
-    original: str, answers: list[str], groups: list[list[int]], original_group: int | None
-) -> int | None:
-    """If the samples' majority answer is already PART of the original claim ("C and Unix" vs
-    "C, Unix, Modula-3 and ABC"), the model agrees with it — it just said less. Only short
-    answers count (at most 8 meaningful words), so a long answer can't match by accident."""
-    if not groups:
-        return original_group
-    sizes = [len(g) for g in groups]
-    majority = max(range(len(groups)), key=lambda i: sizes[i])
-    if original_group is not None and sizes[original_group] == sizes[majority]:
-        return original_group
-    have = set(normalize_text(original).split())
-    for i in sorted(range(len(groups)), key=lambda i: -sizes[i]):
-        words = content_words(answers[groups[i][0]])
-        if 1 <= len(words) <= 8 and words <= have:
-            if original_group is None or sizes[i] > sizes[original_group]:
-                return i
-        break  # only the biggest group can take over
-    return original_group
-
-
-def _rounding_match(
-    original: str, answers: list[str], groups: list[list[int]], original_group: int | None
-) -> int | None:
-    """QA (F7): the original said 8,849 m, the samples said 8,848.86 m, and the grouping model
-    called them different → "likely hallucination" on a correct claim. If the biggest group
-    that agrees with the original up to rounding is bigger than the one the model picked, use
-    it."""
-    from app.detectors.claim_verifier import rounding_only  # local: avoid an import cycle
-
-    best = original_group
-    for i, g in sorted(enumerate(groups), key=lambda t: -len(t[1])):
-        if not g:
-            continue
-        if best is not None and len(groups[best]) >= len(g):
-            break
-        if rounding_only(original, answers[g[0]]):
-            return i
-    return best
 
 
 detector = ConsistencyProbe()

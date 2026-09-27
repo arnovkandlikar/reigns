@@ -9,13 +9,12 @@ enum PetCharacter: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .charlie: return "Mamu"
-        case .marley: return "Mia"
+        case .charlie: return "Charlie"
+        case .marley: return "Marley"
         }
     }
 
-    /// Value for session.start "character" (picks the engine voice and personality). The engine
-    /// still knows them as "charlie" (Mamu) and "marley" (Mia).
+    /// Value for session.start "character" (picks the engine voice and personality).
     var wireCode: String {
         rawValue  // "charlie" or "marley"
     }

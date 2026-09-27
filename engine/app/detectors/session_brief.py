@@ -62,7 +62,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.detectors.base import one_object
 from app.llm import LLMError, complete_json, fast_model_name, llm_available
 from app.models import SessionContext
 
@@ -234,15 +233,6 @@ def _authored(text: str) -> str:
     return (authored[:MESSAGE_CHARS] + note).strip()
 
 
-def _reign_prompt(session: SessionContext, text: str) -> bool:
-    try:
-        from app.learning.memory import reign_authored
-
-        return reign_authored(session, text)
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def _flagged(session: SessionContext, positions: set[int]) -> list[str]:
     """Quotes REIGN marked red/amber in these messages: never let them into the brief."""
     pos_of = {m.message_id: m.position for m in session.messages}
@@ -269,10 +259,7 @@ async def _update(session: SessionContext, judge) -> Brief | None:
         flagged = _flagged(session, {m.position for m in chunk})
         lines = []
         for m in chunk:
-            if m.role == "user" and _reign_prompt(session, m.text):
-                text = "[a REIGN correction prompt: not the user's own words, ignore it]"
-            else:
-                text = _authored(m.text) if m.role == "user" else m.text[:MESSAGE_CHARS]
+            text = _authored(m.text) if m.role == "user" else m.text[:MESSAGE_CHARS]
             lines.append(f"{m.role.upper()}: {text}")
         user = (
             f"PREVIOUS BRIEF:\n{brief.as_json() if not brief.empty() else '(empty)'}\n\n"
@@ -281,10 +268,8 @@ async def _update(session: SessionContext, judge) -> Brief | None:
             + "\n\nNEW MESSAGES:\n"
             + "\n".join(lines)
         )
-        data = one_object(
-            await judge(BRIEF_SYSTEM, user, max_tokens=700, model=fast_model_name())
-        )
-        if data is None:
+        data = await judge(BRIEF_SYSTEM, user, max_tokens=700, model=fast_model_name())
+        if not isinstance(data, dict):
             raise LLMError("brief: model returned no object")
         brief = Brief(
             goal=" ".join(str(data.get("goal") or brief.goal).split())[:300],
