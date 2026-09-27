@@ -191,7 +191,23 @@ class Session:
             return []
         return await self._on_assistant(msg)
 
+    def _reign_authored(self, text: str) -> bool:
+        """Is this user message REIGN's own prompt (Fix it / fresh-start hand-off / context
+        refresh) that the companion pasted? Role C's memory.reign_authored decides; until that
+        lands (or if it fails) nothing changes."""
+        check = getattr(memory, "reign_authored", None)
+        if check is None:
+            return False
+        try:
+            return bool(check(self.ctx, text))
+        except Exception as exc:  # never let this break message handling
+            log.warning("reign_authored failed: %r", exc)
+            return False
+
     def _on_user(self, msg: MessageNew) -> None:
+        if self._reign_authored(msg.text):
+            self.pending_pushback = False
+            return  # REIGN's own prompt: not a source document, not pushback
         if len(msg.text) > extraction.SOURCE_DOC_MIN_CHARS:  # FR-B11
             doc = SourceDoc(doc_id=str(uuid.uuid4()), message_id=msg.message_id, text=msg.text)
             self.ctx.source_docs[doc.doc_id] = doc
