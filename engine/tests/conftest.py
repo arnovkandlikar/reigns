@@ -19,7 +19,8 @@ def _no_real_cloud_services(monkeypatch):
     from app.learning import store
 
     for key in ("MONGODB_URI", "ELEVENLABS_API_KEY", "REIGNS_LANGUAGE", "REIGNS_VOICE_PRAISE",
-                "REIGNS_UNICORN_VOICE_ID"):
+                "REIGNS_UNICORN_VOICE_ID", "REIGNS_LLM_PROVIDER", "GEMINI_API_KEY",
+                "GOOGLE_API_KEY", "REIGNS_LLM_FALLBACK"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(store, "_client", None)
     monkeypatch.setattr(store, "_db", None)
