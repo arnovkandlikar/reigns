@@ -28,6 +28,7 @@ def gemini(monkeypatch):
 
 
 def test_default_is_anthropic(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)  # a shell with .env loaded has one
     monkeypatch.setenv("REIGNS_MODEL", "claude-sonnet-5")
     assert llm.provider() == "anthropic" and llm.model_name() == "claude-sonnet-5"
     assert not llm.llm_available()
