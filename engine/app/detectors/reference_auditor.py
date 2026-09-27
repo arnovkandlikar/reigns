@@ -132,6 +132,27 @@ def parse_paper(claim: Claim) -> PaperRef:
     return PaperRef(title=title.strip().rstrip(".,"), surnames=surnames, year=year)
 
 
+# Words that only show up around real references.
+_CITATION_CUE = re.compile(
+    r"\bet al\b|&|\b(?:paper|article|study|journal|proceedings|conference|workshop|preprint|"
+    r"arxiv|doi|published|publication|vol\.?|pp\.?|in:|nature|science|ieee|acm|neurips|nips|"
+    r"icml|iclr|acl|emnlp|naacl|cvpr|eccv|iccv|aaai|ijcai)\b",
+    re.IGNORECASE,
+)
+SHORT_TITLE_WORDS = 3
+
+
+def looks_like_citation(claim: Claim, ref: PaperRef) -> bool:
+    """Is this really a reference, or a phrase in quotes? QA (Part C, C7): the extractor made
+    `Perl (1987) filled the "glue language" gap` into "The paper 'glue language' exists", and
+    the audit came back "no such paper" → red. Short titles (≤ 3 words) need a citation cue in
+    the ORIGINAL wording (et al., &, a venue, "paper", DOI …); longer titles are trusted as before,
+    and so are claims whose original wording names a paper outright."""
+    if len(ref.title.split()) > SHORT_TITLE_WORDS:
+        return True
+    return bool(_CITATION_CUE.search(claim.quote))
+
+
 _URL = re.compile(r"https?://[^\s<>\"'`)\]]+")
 
 
@@ -348,6 +369,8 @@ class ReferenceAuditor(BaseDetector):
         ref = parse_paper(claim)
         if len(normalize_text(ref.title)) < 6:
             return None  # can't tell what to look up → say nothing (long-chat fix)
+        if not looks_like_citation(claim, ref):
+            return None  # a quoted phrase in prose, not a paper (QA C7: Perl's "glue language")
 
         # All three searches at once; each is cached per title so a paper cited twice is looked
         # up once. return_exceptions=True: one API failing must not sink the others.

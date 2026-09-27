@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.detectors import session_brief
-from app.detectors.base import looks_like_instruction, normalize_text
+from app.detectors.base import looks_like_instruction, normalize_text, one_object
 from app.llm import LLMError, complete_json, fast_model_name, llm_available
 from app.models import Claim, SessionContext
 
@@ -215,8 +215,8 @@ async def _classify(claim: Claim, session: SessionContext, judge) -> GateResult:
     )
     if claim.normalized and claim.normalized != claim.quote:
         user += f"\n(extractor's restatement: {claim.normalized[:400]})"
-    data = await judge(GATE_SYSTEM, user, max_tokens=300, model=fast_model_name())
-    if not isinstance(data, dict):
+    data = one_object(await judge(GATE_SYSTEM, user, max_tokens=300, model=fast_model_name()))
+    if data is None:
         raise LLMError("gate returned no object")
     kind = str(data.get("kind", "")).strip().lower()
     standalone = str(data.get("standalone") or "").strip() or claim.normalized or claim.quote

@@ -689,3 +689,122 @@ async def test_a_correction_with_no_conflicting_verified_fact_is_still_stored(le
     )
     stored = await ledger.on_verdicts(SessionContext(session_id="s"), [c], [v])
     assert [x.kind for x in stored] == ["correction"]
+
+
+# ------------------------------------------------------------------ Part C: judge wraps its JSON
+def test_one_object_unwraps_a_list():
+    from app.detectors.base import one_object
+
+    assert one_object({"verdict": "supported"}) == {"verdict": "supported"}
+    assert one_object([{"verdict": "supported"}]) == {"verdict": "supported"}
+    assert one_object([]) is None and one_object("x") is None and one_object([1, 2]) is None
+
+
+async def test_verifier_reads_a_verdict_wrapped_in_a_list(monkeypatch):
+    """C1: "Earth orbits the Sun about once every 365.25 days" → claim_verifier error
+    "judge returned list, expected an object", silently dropping the web check."""
+    monkeypatch.setenv("TAVILY_API_KEY", "t")
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+    text = "Earth orbits the Sun once every 365.25 days."
+
+    def web(req):
+        if req.url.host == "api.tavily.com":
+            return httpx.Response(200, json={"results": [
+                {"url": "https://en.wikipedia.org/wiki/Year", "content": text}]})
+        return httpx.Response(200, json={"query": {"search": []}})
+
+    async def judge(system, user, **kw):
+        return [{"verdict": "supported", "confidence": 0.95, "evidence_index": 0,
+                 "quote": text, "explanation": "Wikipedia says 365.25 days."}]
+
+    v = ClaimVerifier(transport=httpx.MockTransport(web), judge=judge)
+    r = await v.check(
+        Claim(claim_id="c", message_id="m", quote=text, normalized=text, type="fact",
+              risk="high"),
+        SessionContext(session_id="s"),
+    )
+    assert r.status == "supported"
+
+
+# ------------------------------------------------------------------ Part C, C7: probe on bundles
+PY_BUNDLE = (
+    "Python borrowed design elements from C, Unix, Modula-3, and ABC; some of these barely "
+    "existed in 1980."
+)
+
+
+@pytest.mark.parametrize(
+    "text,vague",
+    [
+        (PY_BUNDLE, True),
+        ("Many of these languages barely survived the 1990s.", True),
+        ("Flask was first released in 2010; Django was first released in 2005.", True),
+        ("The Eiffel Tower was completed in 1889.", False),
+        ("Typical home computers in 1980 had 8-bit CPUs and 16–64 KB of RAM.", True),
+        ("Around 1984–87, machines grew to have 256 KB–1 MB of RAM.", True),
+        ("ABC, a predecessor to Python, was built at CWI in the early 1980s.", True),
+        ("The Eiffel Tower is about 330 metres tall.", False),
+        ("The Ming dynasty ruled from 1368–1644.", False),
+        ("Perl was released in 1987 and Tcl was released in 1988.", False),
+    ],
+)
+def test_probe_skips_bundled_or_hedged_claims(text, vague):
+    from app.detectors.consistency_probe import too_vague_to_probe
+
+    assert too_vague_to_probe(text) is vague
+
+
+def test_a_shorter_answer_contained_in_the_claim_agrees_with_it():
+    from app.detectors.consistency_probe import _contained_match
+
+    five = [[0, 1, 2, 3, 4]]
+    assert _contained_match(PY_BUNDLE, ["C and Unix."] * 5, five, None) == 0
+    # a genuinely different answer is still a mismatch
+    assert _contained_match("The Eiffel Tower was completed in 1899.", ["1889"] * 5, five, None) is None
+    # a long answer can't sneak in by sharing words
+    long = "Python drew on C and Unix and also on many other languages from the 1980s and 1990s"
+    assert _contained_match(PY_BUNDLE, [long] * 5, five, None) is None
+
+
+async def test_probe_does_not_sample_a_bundled_claim():
+    from app.detectors.consistency_probe import ConsistencyProbe
+
+    async def never(*a, **k):
+        raise AssertionError("must not sample")
+
+    async def gate_judge(system, user, **kw):
+        return {"standalone": PY_BUNDLE, "kind": "world_fact", "subject": "python influences",
+                "question": "Which languages influenced Python?"}
+
+    p = ConsistencyProbe(sampler=never, judge=never, gate_judge=gate_judge)
+    c = Claim(claim_id="c", message_id="m", quote=PY_BUNDLE, normalized=PY_BUNDLE, type="fact",
+              risk="high")
+    assert await p.check(c, SessionContext(session_id="s")) is None
+
+
+# ------------------------------------------------------------------ Part C, C7: quoted phrases
+def _paper(quote: str, normalized: str) -> Claim:
+    return Claim(claim_id="c", message_id="m", quote=quote, normalized=normalized, type="paper",
+                 risk="high")
+
+
+def test_a_quoted_phrase_in_prose_is_not_a_citation():
+    from app.detectors.reference_auditor import looks_like_citation, parse_paper
+
+    glue = _paper('Scripting and Unix: Perl (1987) filled the "glue language" gap that shell '
+                  "and awk left", "The paper 'glue language' exists.")
+    assert not looks_like_citation(glue, parse_paper(glue))
+    deep = _paper('LeCun, Bengio & Hinton (2015), "Deep learning", Nature',
+                  "The paper 'Deep learning' exists.")
+    assert looks_like_citation(deep, parse_paper(deep))
+    bert = _paper(f'Devlin et al. (2019), "{BERT_TITLE}"', f"The paper '{BERT_TITLE}' exists.")
+    assert looks_like_citation(bert, parse_paper(bert))
+
+
+async def test_auditor_stays_silent_on_a_quoted_phrase():
+    def boom(req):
+        raise AssertionError("no lookup expected")
+
+    ra = ReferenceAuditor(transport=httpx.MockTransport(boom))
+    glue = _paper('Perl (1987) filled the "glue language" gap', "The paper 'glue language' exists.")
+    assert await ra.check(glue, SessionContext(session_id="s")) is None
