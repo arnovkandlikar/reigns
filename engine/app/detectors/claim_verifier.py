@@ -102,6 +102,9 @@ Rules:
 - The quote must be about the SAME property the claim is about. For "water boils at 50°C at
   sea level", only a sentence stating the boiling point settles it; a sentence about
   sea-level air pressure does not, even though it mentions sea level.
+- Same SCOPE too: a figure for a different route, endpoint, period, version or edition is
+  NOT a contradiction ("Tokyo to Shin-Osaka takes 2 h 21 min" does not contradict "Tokyo to
+  Kyoto takes about 2 h 15 min"). Answer "unverified" instead.
 - Small rounding or phrasing differences ("about 330 m" vs "330 metres") are NOT
   contradictions. Different years, names or clearly different numbers ARE.
 - "explanation" is one short plain-English sentence for a non-expert, e.g.

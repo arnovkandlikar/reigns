@@ -478,3 +478,214 @@ async def test_wikipedia_still_decides_during_an_outage(monkeypatch):
         _claim("The Eiffel Tower was completed in 1889."), SessionContext(session_id="s")
     )
     assert r.status == "supported"
+
+
+# ------------------------------------------------------------------ long chat: memory numbers
+def test_memory_card_numbers_must_come_from_the_user():
+    from app.learning.memory import numbers_grounded
+
+    user = "We're stuck on Python 3.8 and the API only allows 100 requests per minute."
+    assert numbers_grounded("API rate limit is 100 requests per minute.", user)
+    assert numbers_grounded("Uses Python 3.8.", user)
+    assert not numbers_grounded(
+        "API rate limit is 100 requests per minute; sleep 0.6 seconds between calls.", user
+    )
+    assert numbers_grounded("Budget is $1,200.", "my budget is $1200")
+
+
+async def test_extraction_drops_cards_built_from_the_assistants_advice():
+    from app.learning.memory import extract_user_cards
+
+    async def model(system, user, **kw):
+        return {
+            "cards": [
+                {
+                    "kind": "constraint",
+                    "subject": "api rate limit",
+                    "text": "API rate limit is 100 requests per minute; sleep 0.6 seconds "
+                    "between calls.",
+                }
+            ]
+        }
+
+    cards = await extract_user_cards(
+        "What happens if I go over the limit?", "Sleep 0.6 seconds between calls.", judge=model
+    )
+    assert cards == []
+
+
+def test_retry_backoff_is_not_checked_against_a_pacing_interval():
+    from app.detectors.memory_consistency import number_violation
+    from app.learning.memory import MemoryCard
+
+    card = MemoryCard(
+        card_id="c",
+        user_id="u",
+        kind="constraint",
+        text="API rate limit is 100 requests per minute; wait 0.6 seconds between calls.",
+        subject="api rate limit",
+        source="user_message",
+        confidence=1.0,
+        created_at="2026-09-27T00:00:00Z",
+        last_used_at="2026-09-27T00:00:00Z",
+    )
+    assert number_violation(card, "fall back to 60 seconds if Retry-After is missing") is None
+    # the rate itself is still enforced
+    assert number_violation(card, "that's 1,000 requests per minute") is not None
+
+
+# ------------------------------------------------------------------ long chat: verified echoes
+DROPNA_FACT = (
+    "The pandas DataFrame method dropna() returns a new DataFrame by default, but when "
+    "inplace=True is passed, it modifies the original DataFrame in place and returns None instead."
+)
+NOZOMI_FACT = (
+    "Nozomi trains on the Tokaido Shinkansen take about 2 hours 15 minutes to travel from "
+    "Tokyo to Kyoto."
+)
+NOZOMI_CLAIM = (
+    "Nozomi trains on the Tokaido Shinkansen take approximately 2 hours 15 minutes to travel "
+    "from Tokyo to Kyoto."
+)
+NOZOMI_BAD_CORRECTION = (
+    "Wikipedia states the fastest Nozomi service takes 2 hours 21 minutes from Tokyo to Osaka "
+    "(which is beyond Kyoto), not 2 hours 15 minutes to Kyoto."
+)
+
+
+@pytest.mark.parametrize(
+    "fact,claim",
+    [
+        (
+            DROPNA_FACT,
+            "df.dropna() returns a new DataFrame by default, but with inplace=True it modifies "
+            "the original",
+        ),
+        (NOZOMI_FACT, NOZOMI_CLAIM),
+        ("The Eiffel Tower is about 330 metres tall.", "The Eiffel Tower is 330 metres tall."),
+    ],
+)
+def test_a_claim_saying_what_was_verified_echoes_it(fact, claim):
+    from app.learning.memory import echoes
+
+    assert echoes(fact, claim)
+
+
+@pytest.mark.parametrize(
+    "fact,claim",
+    [
+        (NOZOMI_FACT, "Nozomi trains take about 2 hours 45 minutes from Tokyo to Kyoto."),
+        ("The Eiffel Tower was completed in 1889.", "The Eiffel Tower was completed in 1899."),
+        ("The Eiffel Tower is 330 metres tall.", "The Eiffel Tower in London is 330 metres tall."),
+        ("Tipping is customary in the US.", "Tipping is not customary in the US."),
+        ("Canberra is the capital of Australia.", "Sydney is the capital of Australia."),
+    ],
+)
+def test_a_different_claim_does_not_echo(fact, claim):
+    from app.learning.memory import echoes
+
+    assert not echoes(fact, claim)
+
+
+@pytest.fixture
+def ledger(tmp_path, monkeypatch):
+    from app.learning import memory
+
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    monkeypatch.delenv("REIGNS_USER", raising=False)
+    store = memory.MemoryStore(str(tmp_path / "mem.db"))
+    memory.set_store(store)
+    monkeypatch.setenv("REIGNS_MEMORY_DB", store.path)  # else get_store() swaps it back
+    yield memory
+    memory.set_store(None)
+
+
+def _world_gate(standalone: str, subject: str):
+    async def judge(system, user, **kw):
+        return {"standalone": standalone, "kind": "world_fact", "subject": subject,
+                "question": None}
+
+    return judge
+
+
+async def test_memory_never_contradicts_a_claim_it_verified_earlier(ledger):
+    """Japan long chat: a bad correction card (Tokyo→Osaka figure) made the verified
+    Tokyo→Kyoto 2 h 15 min red. The verified card wins; memory stays silent."""
+    from app.detectors.memory_consistency import MemoryConsistency
+
+    await ledger.add_card("local", "verified_fact", NOZOMI_FACT, "nozomi travel time",
+                          "claim_verifier", 0.9)
+    await ledger.add_card("local", "correction", NOZOMI_BAD_CORRECTION, "nozomi travel time",
+                          "claim_verifier", 0.9)
+
+    async def judge(system, user, **kw):
+        return {"verdict": "contradicts", "memory_index": 0, "confidence": 0.9,
+                "explanation": "Earlier this was verified: 2 hours 21 minutes."}
+
+    async def no_cards(*a, **k):
+        return {"cards": []}
+
+    mc = MemoryConsistency(judge=judge, extract_judge=no_cards,
+                           gate_judge=_world_gate(NOZOMI_CLAIM, "nozomi travel time"))
+    c = Claim(claim_id="c1", message_id="a1", quote=NOZOMI_CLAIM, normalized=NOZOMI_CLAIM,
+              type="fact", risk="high")
+    assert await mc.check(c, SessionContext(session_id="s")) is None
+
+
+async def test_a_real_contradiction_of_a_verified_fact_still_goes_red(ledger):
+    from app.detectors.memory_consistency import MemoryConsistency
+
+    await ledger.add_card("local", "verified_fact", "The Eiffel Tower was completed in 1889.",
+                          "eiffel tower completion", "claim_verifier", 0.9)
+    claim_text = "The Eiffel Tower was completed in 1899."
+
+    async def judge(system, user, **kw):
+        return {"verdict": "contradicts", "memory_index": 0, "confidence": 0.9,
+                "explanation": "Earlier this was verified: completed in 1889."}
+
+    async def no_cards(*a, **k):
+        return {"cards": []}
+
+    mc = MemoryConsistency(judge=judge, extract_judge=no_cards,
+                           gate_judge=_world_gate(claim_text, "eiffel tower completion"))
+    c = Claim(claim_id="c1", message_id="a1", quote=claim_text, normalized=claim_text,
+              type="fact", risk="high")
+    r = await mc.check(c, SessionContext(session_id="s"))
+    assert r is not None and r.status == "contradicted"
+
+
+async def test_no_correction_is_stored_over_a_verified_fact(ledger):
+    from app.models import ClaimVerdict
+
+    await ledger.add_card("local", "verified_fact", NOZOMI_FACT, "nozomi travel time",
+                          "claim_verifier", 0.9)
+    c = Claim(claim_id="c1", message_id="a1", quote=NOZOMI_CLAIM, normalized=NOZOMI_CLAIM,
+              type="fact", risk="high")
+    ev = Evidence(source="Wikipedia", url="https://en.wikipedia.org/wiki/Nozomi",
+                  snippet="The fastest Nozomi takes 2 hours 21 minutes to Shin-Osaka.")
+    v = ClaimVerdict(
+        claim_id="c1", quote=NOZOMI_CLAIM, type="fact", risk="high", final="red",
+        detector_results=[DetectorResult(detector="claim_verifier", status="contradicted",
+                                         confidence=0.9, evidence=[ev],
+                                         explanation="Wikipedia says 2 hours 21 minutes.")],
+    )
+    stored = await ledger.on_verdicts(SessionContext(session_id="s"), [c], [v])
+    assert stored == []
+    assert [x.kind for x in await ledger.list_cards("local")] == ["verified_fact"]
+
+
+async def test_a_correction_with_no_conflicting_verified_fact_is_still_stored(ledger):
+    from app.models import ClaimVerdict
+
+    t = "The Eiffel Tower was completed in 1899."
+    c = Claim(claim_id="c1", message_id="a1", quote=t, normalized=t, type="fact", risk="high")
+    ev = Evidence(source="Wikipedia", url="https://en.wikipedia.org/wiki/Eiffel_Tower",
+                  snippet="The tower was completed in 1889.")
+    v = ClaimVerdict(
+        claim_id="c1", quote=t, type="fact", risk="high", final="red",
+        detector_results=[DetectorResult(detector="claim_verifier", status="contradicted",
+                                         confidence=0.9, evidence=[ev],
+                                         explanation="Wikipedia says 1889, not 1899.")],
+    )
+    stored = await ledger.on_verdicts(SessionContext(session_id="s"), [c], [v])
+    assert [x.kind for x in stored] == ["correction"]
