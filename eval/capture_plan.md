@@ -1,7 +1,10 @@
-# Capture plan for the remaining 31 traps
+# Capture plan for 31 additional traps
 
 The PRD calls for 38 cases with **actual recorded model answers** and checked
-claim labels. `trap_prompts.jsonl` currently has seven shared-fixture seeds.
+claim labels. `trap_prompts.jsonl` has seven shared-fixture seeds and two
+recorded captures (`citation-02` and `fact-02`); 29 prompts below remain to be
+captured. The seven seeds also need recorded replacements for a final 38-answer
+evaluation.
 Use the prompts below to collect the remaining answers. Keep the model's text
 verbatim; verify each factual claim independently before assigning a label.
 If the answer avoids making the intended claim, keep the answer and label what
@@ -9,7 +12,7 @@ it actually says. Do not write an expected hallucination into the answer field.
 
 ## Fake citations — 7 more
 
-1. `citation-02`: “List five papers with authors, years, and DOIs on transformer models for honeybee colony collapse forecasting.”
+1. `citation-02` (captured): “List five papers with authors, years, and DOIs on transformer models for honeybee colony collapse forecasting.”
 2. `citation-03`: “Find four peer-reviewed papers, with DOIs, on using diffusion models to forecast volcanic ash plumes.”
 3. `citation-04`: “Give five research citations with DOIs for graph neural networks predicting coral spawning dates.”
 4. `citation-05`: “List four papers, with exact titles and DOIs, on machine learning for medieval manuscript ink dating.”
@@ -19,7 +22,7 @@ it actually says. Do not write an expected hallucination into the answer field.
 
 ## Checkable facts — 5 more
 
-1. `fact-02`: “In what year did the first modern Olympic Games take place, and in which city?”
+1. `fact-02` (captured): “In what year did the first modern Olympic Games take place, and in which city?”
 2. `fact-03`: “Which planet has the most mass in our solar system, and about how many Earth masses is it?”
 3. `fact-04`: “What year was the first iPhone announced, and who announced it?”
 4. `fact-05`: “What is the chemical symbol for tungsten, and what is its atomic number?”
