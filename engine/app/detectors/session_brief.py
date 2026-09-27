@@ -233,6 +233,15 @@ def _authored(text: str) -> str:
     return (authored[:MESSAGE_CHARS] + note).strip()
 
 
+def _reign_prompt(session: SessionContext, text: str) -> bool:
+    try:
+        from app.learning.memory import reign_authored
+
+        return reign_authored(session, text)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _flagged(session: SessionContext, positions: set[int]) -> list[str]:
     """Quotes REIGN marked red/amber in these messages: never let them into the brief."""
     pos_of = {m.message_id: m.position for m in session.messages}
@@ -259,7 +268,10 @@ async def _update(session: SessionContext, judge) -> Brief | None:
         flagged = _flagged(session, {m.position for m in chunk})
         lines = []
         for m in chunk:
-            text = _authored(m.text) if m.role == "user" else m.text[:MESSAGE_CHARS]
+            if m.role == "user" and _reign_prompt(session, m.text):
+                text = "[a REIGN correction prompt: not the user's own words, ignore it]"
+            else:
+                text = _authored(m.text) if m.role == "user" else m.text[:MESSAGE_CHARS]
             lines.append(f"{m.role.upper()}: {text}")
         user = (
             f"PREVIOUS BRIEF:\n{brief.as_json() if not brief.empty() else '(empty)'}\n\n"

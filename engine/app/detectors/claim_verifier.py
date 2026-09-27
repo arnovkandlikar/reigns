@@ -99,6 +99,9 @@ Rules:
   subject. Do not reason from indirect facts (birth dates, related events, "so it couldn't
   have …"), and be careful with people who may merely share a name. If you have to infer,
   answer "unverified".
+- The quote must be about the SAME property the claim is about. For "water boils at 50°C at
+  sea level", only a sentence stating the boiling point settles it; a sentence about
+  sea-level air pressure does not, even though it mentions sea level.
 - Small rounding or phrasing differences ("about 330 m" vs "330 metres") are NOT
   contradictions. Different years, names or clearly different numbers ARE.
 - "explanation" is one short plain-English sentence for a non-expert, e.g.
@@ -163,7 +166,7 @@ class ClaimVerifier(BaseDetector):
             f"judge:{normalize_text(query)}",
             lambda: self._judge(claim, snippets, examples),
         )
-        return self._to_result(verdict, snippets)
+        return self._to_result(verdict, snippets, claim.normalized or claim.quote)
 
     async def _past_cases(self, query: str, claim_type: str) -> str:
         """Experience memory block for the judge ("" when Atlas is off or nothing is similar)."""
@@ -309,7 +312,9 @@ class ClaimVerifier(BaseDetector):
             raise TypeError(f"judge returned {type(data).__name__}, expected an object")
         return data
 
-    def _to_result(self, data: dict[str, Any], snippets: list[Snippet]) -> DetectorResult | None:
+    def _to_result(
+        self, data: dict[str, Any], snippets: list[Snippet], claim_text: str = ""
+    ) -> DetectorResult | None:
         verdict = str(data.get("verdict", "unverified")).lower().strip()
         if verdict == "not_checkable":
             return None  # nothing to say — don't turn advice/opinions/context-talk amber
@@ -349,6 +354,17 @@ class ClaimVerifier(BaseDetector):
             confidence = min(confidence, 0.7)  # supported but unquotable → less sure
             source = snippets[0]
             quote = snippet(source.text, 200)
+
+        if verdict == "contradicted" and not _comparable_numbers(claim_text, quote):
+            # Live bug: "Water boils at 50°C" was marked contradicted by "Average sea-level
+            # pressure is 1,013.25 hPa". A numeric claim needs a quote with a number of the
+            # same kind (a temperature for a temperature, a year for a year) to be red.
+            return self.result(
+                "unverified",
+                0.5,
+                "The sources I found are about a related number, not this one.",
+                [Evidence(source=source.source, url=source.url, snippet=snippet(quote))],
+            )
 
         needed = MIN_CONTRADICT_CONFIDENCE if verdict == "contradicted" else MIN_DECISIVE_CONFIDENCE
         if confidence < needed:
@@ -447,6 +463,23 @@ _QUERY_STOP = {
 }
 
 
+_SUFFIXES = ("ings", "ing", "ied", "ies", "ed", "es", "s")
+
+
+def _stems(words: set[str]) -> set[str]:
+    """Crude stemming so "boils" matches "boiling" and "created" matches "creates". Live bug:
+    for "water boils at 100 °C at sea level" the pressure sentence (sharing "sea level") beat
+    the boiling-point sentence (which says "boiling", not "boils")."""
+    out = set()
+    for w in words:
+        for suf in _SUFFIXES:
+            if len(w) > len(suf) + 3 and w.endswith(suf):
+                w = w[: -len(suf)]
+                break
+        out.add(w)
+    return out
+
+
 def pick_sentences(
     text: str, claim_text: str, k: int = WIKI_SENTENCES, intro: int = 2
 ) -> list[str]:
@@ -460,7 +493,7 @@ def pick_sentences(
             + 1 per claim number with a same-length number in the sentence (1899 ↔ 1889:
               the kind of sentence that can contradict it)
     """
-    want_words = content_words(claim_text)
+    want_words = _stems(content_words(claim_text))
     want_numbers = set(_NUMBER.findall(claim_text))
     want_lengths = {len(n) for n in want_numbers}
     sentences = [s.strip() for s in _SENTENCE_SPLIT.split(text) if len(s.strip()) > 20]
@@ -471,7 +504,7 @@ def pick_sentences(
             continue
         numbers = set(_NUMBER.findall(sent))
         score = (
-            len(want_words & content_words(sent))
+            len(want_words & _stems(content_words(sent)))
             + 3 * len(want_numbers & numbers)
             + len(want_lengths & {len(n) for n in numbers - want_numbers})
         )
@@ -479,6 +512,47 @@ def pick_sentences(
             scored.append((score, i))
     chosen |= {i for _, i in sorted(scored, key=lambda t: (-t[0], t[1]))[:k]}
     return [sentences[i] for i in sorted(chosen)]
+
+
+# ---------------------------------------------------------------------------
+# numbers of the same kind (a contradiction must compare like with like)
+# ---------------------------------------------------------------------------
+_NUM = r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?"
+_UNIT_FAMILIES: dict[str, re.Pattern[str]] = {
+    name: re.compile(_NUM + r"\s*(?:" + units + r")(?![a-z])", re.IGNORECASE)
+    for name, units in {
+        "temperature": r"°\s*[cfk]|degrees?\s*(?:celsius|fahrenheit|c|f)|celsius|fahrenheit|"
+        r"kelvin",
+        "length": r"km|kilomet(?:re|er)s?|m|met(?:re|er)s?|cm|mm|ft|feet|foot|miles?|mi|"
+        r"inch(?:es)?|in\b",
+        "mass": r"kg|kilograms?|g|grams?|lbs?|pounds?|tonnes?|tons?",
+        "pressure": r"hpa|kpa|pa|atm|bar|mmhg|inhg|psi",
+        "money": r"dollars?|usd|eur|euros?|yen|pounds sterling|gbp",
+        "percent": r"%|percent|per cent",
+        "duration": r"hours?|hrs?|minutes?|mins?|seconds?|secs?|days?|weeks?|months?",
+    }.items()
+}
+_MONEY_PREFIX = re.compile(r"[$€£¥]\s*\d")
+_YEAR = re.compile(r"(?<![\w.,])(1[0-9]{3}|20[0-9]{2})(?![\w.,]*\d)")
+
+
+def _number_kinds(text: str) -> set[str]:
+    kinds = {name for name, rx in _UNIT_FAMILIES.items() if rx.search(text)}
+    if _MONEY_PREFIX.search(text):
+        kinds.add("money")
+    if _YEAR.search(text):
+        kinds.add("year")
+    return kinds
+
+
+def _comparable_numbers(claim_text: str, quote: str) -> bool:
+    """False when a numeric claim is 'contradicted' by a quote whose numbers are a different
+    kind of quantity (a temperature claim vs a pressure sentence). A quote with no numbers
+    passes: it may contradict a name or place instead ("created by Guido van Rossum")."""
+    want = _number_kinds(claim_text)
+    if not want or not _NUMBER.search(quote):
+        return True
+    return bool(want & _number_kinds(quote))
 
 
 _TAGS = re.compile(r"<[^>]+>")

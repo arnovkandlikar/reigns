@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.detectors.base import BaseDetector, http_client, snippet
+from app.detectors.claim_gate import requested_untrue
 from app.detectors.reference_auditor import package_exists
 from app.models import Claim, DetectorResult, Evidence, SessionContext
 
@@ -382,6 +383,8 @@ class CodeApiChecker(BaseDetector):
         self.client_factory = client_factory  # tests inject a mock for the PyPI lookups
 
     async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
+        if requested_untrue(session, claim):
+            return None  # "write code with a wrong API call": broken on purpose
         code = claim.code or claim.quote
         try:
             data = await self.cached(

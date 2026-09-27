@@ -633,10 +633,56 @@ def cards_from_verdicts(claims: list[Claim], verdicts: list[ClaimVerdict]) -> li
 # =============================================================================================
 # Engine hooks (called from session/plugins — best-effort, never raise)
 # =============================================================================================
+# Text REIGN itself writes into Claude's message box (Fix-it prompts, "start fresh"
+# hand-offs, context refreshes). When the user sends it, it arrives as a USER message, but it
+# is REIGN talking, not the user: learning it would turn REIGN's own summaries into "What you
+# told Claude" evidence and feed the same claims back in, round after round.
+REIGN_MARKERS = (
+    "start a fresh chat with this handoff",
+    "start a fresh chat with this hand-off",
+    "quick context refresh before we continue",
+    "un repaso rapido del contexto antes de seguir",
+    "recheck the failed point first",
+    "problems and evidence",
+)
+REIGN_OVERLAP = 0.6  # share of a known REIGN prompt's words found in the message
+
+
+def reign_authored(session: SessionContext | None, text: str) -> bool:
+    """Is this user message (mostly) a prompt REIGN wrote? Pure function, never raises."""
+    try:
+        low = normalize_text(text)
+        if any(normalize_text(m) in low for m in REIGN_MARKERS):
+            return True
+        if session is None:
+            return False
+        words = tokens(text)
+        if not words:
+            return False
+        known = [c.text for c in getattr(session, "corrections", []) if getattr(c, "text", "")]
+        try:
+            from app.detectors import session_brief  # local: memory must not need detectors
+
+            brief = session_brief.for_claude(session)
+            if brief:
+                known.append(brief)
+        except Exception:  # noqa: BLE001
+            pass
+        for prompt in known:
+            want = tokens(prompt)
+            if want and len(want & words) / len(want) >= REIGN_OVERLAP:
+                return True
+        return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def on_user_message(session: SessionContext, message: Any, judge=None) -> list[MemoryCard]:
     """After a user message: extract user facts/constraints and store them."""
     try:
         text = getattr(message, "text", "") or ""
+        if reign_authored(session, text):
+            return []  # REIGN's own prompt pasted into the chat, not something the user said
         prev = session.previous(getattr(message, "message_id", ""), "assistant")
         extracted = await extract_user_cards(text, prev.text if prev else "", judge=judge)
         uid = user_id_for(session)
