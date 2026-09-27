@@ -7,7 +7,7 @@ struct ReignsApp: App {
 
     var body: some Scene {
         // PRD §18 privacy: pause switch in the menu bar.
-        MenuBarExtra {
+        MenuBarExtra("Reigns", systemImage: state.isPaused ? "eye.slash" : "eye") {
             Button(state.isPaused ? "Resume Reigns" : "Pause Reigns") {
                 appDelegate.togglePause()
             }
@@ -52,9 +52,6 @@ struct ReignsApp: App {
             Divider()
             Button("Quit Reigns") { NSApp.terminate(nil) }
                 .keyboardShortcut("q")
-        } label: {
-            // The waves logo (template: macOS colours it for light/dark menu bars). Faded when paused.
-            Image(nsImage: MenuBarIcon.image(paused: state.isPaused))
         }
     }
 }

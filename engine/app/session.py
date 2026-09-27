@@ -41,15 +41,6 @@ from app import voice
 
 log = logging.getLogger("reigns.session")
 
-# Chat identity (shared with the companion's ConversationWatcher.chatKey): the message_id of the
-# first message, "+", the message_id of the first reply.
-CHAT_KEY_SEP = "+"
-
-
-def full_chat_key(first_message_id: str, first_reply_id: str) -> str:
-    return f"{first_message_id}{CHAT_KEY_SEP}{first_reply_id}"
-
-
 DETECTOR_TIMEOUT_S = float(os.environ.get("REIGNS_DETECTOR_TIMEOUT_S", "12"))
 
 
@@ -70,9 +61,7 @@ class Session:
         self._background: set[asyncio.Task] = set()
         self.voice_sink: Optional[Callable] = None  # set by the WS handler
         self.voice_state = voice.VoiceState()
-        # Per-chat heat memory: flipping back to a chat restores its panic rating. A chat is named
-        # by its first message AND the first reply ("<id0>+<id1>", see full_chat_key): two chats that
-        # open with the same prompt get different replies, so they no longer share a score.
+        # Per-chat heat memory: flipping back to a chat restores its panic rating.
         self.chat_key: Optional[str] = None
         self._restored_counts = (0, 0)  # red/amber from the chat's earlier visits
         self._last_saved_heat: Optional[tuple] = None
@@ -95,12 +84,6 @@ class Session:
             red_count=red, amber_count=amber,
         )
 
-    @property
-    def _chat_key_ready(self) -> bool:
-        """Only a full key (first message + first reply) is saved or restored. A first-message-only
-        key is shared by every chat that opens with the same words, so it is never used."""
-        return bool(self.chat_key) and CHAT_KEY_SEP in self.chat_key
-
     def _remember_heat(self, level: int, red: int, amber: int) -> None:
         """Note this chat's latest heat; _save_heat() writes it if it changed."""
         self._heat_to_save = (self.heat.heat, level, red, amber)
@@ -109,7 +92,7 @@ class Session:
         """Persist the chat's heat (a local SQLite upsert, ~1 ms) when it changed. Awaited rather
         than spawned so the write can't be cancelled halfway and wedge the ledger connection."""
         key = self._heat_to_save
-        if not self._chat_key_ready or key is None or key == self._last_saved_heat:
+        if self.chat_key is None or key is None or key == self._last_saved_heat:
             return
         self._last_saved_heat = key
         await self.ledger.save_chat_heat(self.chat_key, self.sid, *key)
@@ -117,9 +100,7 @@ class Session:
     async def _restore_chat(self, chat_key: str) -> list[Envelope]:
         """session.start for a chat we've seen before → put its heat (and bubble) back."""
         self.chat_key = chat_key
-        # No reply yet → nothing was ever judged in this chat, and its first-message key may
-        # belong to an older chat that opened with the same prompt: start calm.
-        saved = await self.ledger.load_chat(chat_key) if self._chat_key_ready else None
+        saved = await self.ledger.load_chat(chat_key)
         if not saved:
             return [self._heat_env()]
         self.heat.restore(int(saved["heat"]), self.clock())
@@ -203,9 +184,7 @@ class Session:
             return []  # companion re-sent a message we already processed
         self.ctx.messages.append(ChatMessage(**msg.model_dump()))
         if self.chat_key is None and msg.position == 0:
-            self.chat_key = msg.message_id  # a brand-new chat: provisional name until the reply
-        elif msg.position == 1 and self.chat_key and not self._chat_key_ready:
-            self.chat_key = full_chat_key(self.chat_key, msg.message_id)
+            self.chat_key = msg.message_id  # a brand-new chat: its first message names it
         await self.ledger.message(self.sid, msg, heat=self.heat.heat)
         if msg.role == "user":
             self._on_user(msg)
@@ -365,7 +344,7 @@ class Session:
                 except ValueError as exc:  # a malformed offer must never break the reply
                     log.warning("brief offer dropped: %s", exc)
         await self.ledger.message_heat(self.sid, msg.message_id, self.heat.heat)
-        if self._chat_key_ready:
+        if self.chat_key:
             await self.ledger.save_chat_bubble(self.chat_key, bubble.model_dump_json())
         await self._save_heat()
         self._spawn(store.record_verdicts(self.ctx, claims, verdicts))
