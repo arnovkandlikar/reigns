@@ -1044,3 +1044,249 @@ def test_apa_without_quote_marks_keeps_the_real_title():
     assert ref.quoted and ref.year == 2019 and "Devlin" in ref.surnames
     assert ref.title == ("BERT: Pre-training of deep bidirectional transformers for language "
                          "understanding")
+
+
+# ------------------------------------------------------------------ demo run: DOI links
+JEB_DOI = "10.1242/jeb.068718"
+JEB_TITLE = ("A nicotinic acetylcholine receptor agonist affects honey bee sucrose "
+             "responsiveness and decreases waggle dancing")
+JEB_CITATION = (
+    "Eiri, D. M., & Nieh, J. C. (2012). A nicotinic acetylcholine receptor agonist affects "
+    "honey bee sucrose responsiveness and decreases waggle dancing. Journal of Experimental "
+    f"Biology, 215(12), 2022–2029. https://doi.org/{JEB_DOI}"
+)
+
+
+def _doi_world(registered: dict, handle_known: set = frozenset(), calls: list | None = None):
+    def handler(req):
+        path = req.url.path
+        if calls is not None:
+            calls.append(str(req.url))
+        if req.url.host == "api.crossref.org" and path.startswith("/works/"):
+            doi = path[len("/works/"):]
+            if doi in registered:
+                title, family = registered[doi]
+                return httpx.Response(200, json={"message": {
+                    "DOI": doi, "title": [title], "issued": {"date-parts": [[2012]]},
+                    "author": [{"family": family}]}})
+            return httpx.Response(404)
+        if req.url.host == "doi.org" and path.startswith("/api/handles/"):
+            doi = path[len("/api/handles/"):]
+            code = 1 if doi in handle_known else 100
+            return httpx.Response(200 if code == 1 else 404, json={"responseCode": code})
+        return httpx.Response(403)  # publishers block bots
+
+    return handler
+
+
+def _url_claim_in(reply: str, url: str):
+    s = SessionContext(session_id="s")
+    from app.models import ChatMessage
+    s.messages.append(ChatMessage(message_id="m", role="assistant", position=1, text=reply))
+    c = Claim(claim_id="c", message_id="m", quote=url, normalized=f"The URL {url} exists.",
+              type="url", risk="high")
+    return c, s
+
+
+async def test_a_real_doi_is_green_even_when_the_publisher_blocks_bots():
+    ra = ReferenceAuditor(transport=httpx.MockTransport(
+        _doi_world({JEB_DOI: (JEB_TITLE, "Eiri")})))
+    c, s = _url_claim_in(JEB_CITATION, f"https://doi.org/{JEB_DOI}")
+    r = await ra.check(c, s)
+    assert r.status == "supported" and "waggle" in r.explanation
+
+
+async def test_a_made_up_doi_is_red():
+    ra = ReferenceAuditor(transport=httpx.MockTransport(_doi_world({})))
+    fake = JEB_CITATION.replace(JEB_DOI, "10.1242/jeb.999999")
+    c, s = _url_claim_in(fake, "https://doi.org/10.1242/jeb.999999")
+    r = await ra.check(c, s)
+    assert r.status == "contradicted" and "doesn't exist" in r.explanation
+
+
+async def test_a_real_doi_attached_to_a_different_paper_is_red():
+    other = ("Deep residual learning for image recognition", "He")
+    ra = ReferenceAuditor(transport=httpx.MockTransport(_doi_world({JEB_DOI: other})))
+    c, s = _url_claim_in(JEB_CITATION, f"https://doi.org/{JEB_DOI}")
+    r = await ra.check(c, s)
+    assert r.status == "contradicted" and "different paper" in r.explanation
+
+
+async def test_a_non_crossref_doi_known_to_doi_org_is_green():
+    arxiv_doi = "10.48550/arXiv.1810.04805"
+    ra = ReferenceAuditor(transport=httpx.MockTransport(_doi_world({}, {arxiv_doi})))
+    c, s = _url_claim_in(f"BERT preprint: https://doi.org/{arxiv_doi}",
+                         f"https://doi.org/{arxiv_doi}")
+    r = await ra.check(c, s)
+    assert r.status == "supported"
+
+
+async def test_a_bare_doi_link_with_no_citation_text_is_just_checked_for_existence():
+    ra = ReferenceAuditor(transport=httpx.MockTransport(
+        _doi_world({JEB_DOI: ("Something unrelated entirely", "Zed")})))
+    c, s = _url_claim_in(f"See https://doi.org/{JEB_DOI}", f"https://doi.org/{JEB_DOI}")
+    r = await ra.check(c, s)
+    assert r.status == "supported"  # too little context to call it a mismatch
+
+
+async def test_a_normal_link_blocked_by_the_site_is_not_flagged():
+    ra = ReferenceAuditor(transport=httpx.MockTransport(lambda req: httpx.Response(403)))
+    c, s = _url_claim_in("Docs: https://example-journal.org/article/42",
+                         "https://example-journal.org/article/42")
+    assert await ra.check(c, s) is None
+
+
+# ------------------------------------------------------------------ demo run: rules vs facts
+async def test_a_true_fact_explaining_why_a_rule_cant_be_met_is_not_red(ledger):
+    """User: 'retries … using only requests.get'. Claude: 'Automatic retries need a Session with
+    an HTTPAdapter' (true). It went red as 'you told Claude to use only requests.get'."""
+    from app.detectors.memory_consistency import MemoryConsistency
+
+    await ledger.add_card("local", "constraint", "Must use only requests.get, no other methods.",
+                          "requests method", "user_message")
+    text = "Automatic retries need a Session with an HTTPAdapter"
+
+    async def judge(system, user, **kw):
+        return {"verdict": "contradicts", "memory_index": 0, "confidence": 0.9,
+                "explanation": "You told Claude to use only requests.get."}
+
+    async def no_cards(*a, **k):
+        return {"cards": []}
+
+    mc = MemoryConsistency(judge=judge, extract_judge=no_cards,
+                           gate_judge=_world_gate(text, "requests retries"))
+    c = Claim(claim_id="c1", message_id="a1", quote=text, normalized=text, type="fact",
+              risk="high")
+    assert await mc.check(c, SessionContext(session_id="s")) is None
+
+
+async def test_code_that_breaks_a_user_rule_is_still_red(ledger):
+    from app.detectors.memory_consistency import MemoryConsistency
+
+    await ledger.add_card("local", "constraint", "API rate limit is 100 requests per minute.",
+                          "api rate limit", "user_message")
+    code = "import time\nfor c in cities:\n    fetch(c)  # 1000 requests per minute\n"
+
+    async def no_cards(*a, **k):
+        return {"cards": []}
+
+    async def gate(system, user, **kw):
+        return {"standalone": code, "kind": "advice", "subject": "request loop", "question": None}
+
+    mc = MemoryConsistency(extract_judge=no_cards, gate_judge=gate)
+    c = Claim(claim_id="c1", message_id="a1", quote=code, normalized=code, type="code",
+              risk="high", code=code)
+    r = await mc.check(c, SessionContext(session_id="s"))
+    assert r is not None and r.status == "contradicted"
+
+
+def test_extraction_prompt_skips_one_off_answer_format_rules():
+    from app.learning.memory import EXTRACT_SYSTEM
+
+    assert "using only requests.get" in EXTRACT_SYSTEM and "no tools" in EXTRACT_SYSTEM
+
+
+async def test_a_true_price_fact_does_not_break_the_users_budget(ledger):
+    from app.detectors.memory_consistency import MemoryConsistency
+
+    await ledger.add_card("local", "constraint", "Total trip budget is $500.", "trip budget",
+                          "user_message")
+    text = "Round-trip flights from New York to Tokyo usually cost about $1,000."
+
+    async def judge(system, user, **kw):
+        return {"verdict": "unrelated"}
+
+    async def no_cards(*a, **k):
+        return {"cards": []}
+
+    mc = MemoryConsistency(judge=judge, extract_judge=no_cards,
+                           gate_judge=_world_gate(text, "flight prices"))
+    c = Claim(claim_id="c1", message_id="a1", quote=text, normalized=text, type="number",
+              risk="high")
+    assert await mc.check(c, SessionContext(session_id="s")) is None
+
+
+# ------------------------------------------------------------------ demo run: glued link text
+async def test_a_doi_glued_to_the_next_sentence_is_still_checked_as_the_real_doi():
+    """The companion read '…605–612.https://doi.org/10.2307/1414040This was the first…' and six
+    real DOIs went red as 404s."""
+    ra = ReferenceAuditor(transport=httpx.MockTransport(
+        _doi_world({JEB_DOI: (JEB_TITLE, "Eiri")})))
+    glued = f"https://doi.org/{JEB_DOI}This"
+    c, s = _url_claim_in(JEB_CITATION.replace(JEB_DOI, JEB_DOI + "This was the study"), glued)
+    r = await ra.check(c, s)
+    assert r.status == "supported"
+
+
+async def test_a_normal_link_glued_to_the_next_word_is_retried_without_it():
+    def handler(req):
+        return httpx.Response(200 if req.url.path == "/docs/intro" else 404, text="ok")
+
+    ra = ReferenceAuditor(transport=httpx.MockTransport(handler))
+    c, s = _url_claim_in("See https://example.org/docs/introThen continue.",
+                         "https://example.org/docs/introThen")
+    r = await ra.check(c, s)
+    assert r.status == "supported"
+
+
+async def test_a_real_camelcase_link_is_left_alone():
+    def handler(req):
+        return httpx.Response(200 if req.url.path == "/MayankKotla" else 404, text="ok")
+
+    ra = ReferenceAuditor(transport=httpx.MockTransport(handler))
+    c, s = _url_claim_in("https://github.com/MayankKotla", "https://github.com/MayankKotla")
+    r = await ra.check(c, s)
+    assert r.status == "supported"
+
+
+# ------------------------------------------------------------------ demo switch
+def _asked(text_user: str, text_reply: str):
+    from app.models import ChatMessage
+
+    s = SessionContext(session_id="s")
+    s.messages += [ChatMessage(message_id="u", role="user", position=0, text=text_user),
+                   ChatMessage(message_id="a", role="assistant", position=1, text=text_reply)]
+    c = Claim(claim_id="c", message_id="a", quote="Water boils at 50°C at sea level.",
+              normalized="Water boils at 50°C at sea level.", type="fact", risk="high")
+    return s, c
+
+
+async def test_requested_lies_are_skipped_by_default(monkeypatch):
+    from app.detectors.claim_gate import gate
+
+    monkeypatch.delenv("REIGNS_DEMO_CATCH_REQUESTED", raising=False)
+    s, c = _asked("give me 3 false statements", "1. Water boils at 50°C at sea level.")
+
+    async def judge(system, user, **kw):
+        return {"standalone": c.normalized, "kind": "not_asserted", "subject": "water",
+                "question": None}
+
+    assert (await gate(c, s, judge)).kind == "not_asserted"
+
+
+async def test_demo_switch_checks_requested_lies(monkeypatch):
+    from app.detectors.claim_gate import gate, requested_untrue
+
+    monkeypatch.setenv("REIGNS_DEMO_CATCH_REQUESTED", "1")
+    s, c = _asked("give me 3 false statements", "1. Water boils at 50°C at sea level.")
+
+    async def judge(system, user, **kw):
+        return {"standalone": c.normalized, "kind": "not_asserted", "subject": "water",
+                "question": None}
+
+    assert not requested_untrue(s, c)
+    assert (await gate(c, s, judge)).kind == "world_fact"
+
+
+async def test_demo_switch_keeps_rejected_myths_unflagged(monkeypatch):
+    from app.detectors.claim_gate import gate
+
+    monkeypatch.setenv("REIGNS_DEMO_CATCH_REQUESTED", "1")
+    s, c = _asked("What are common myths about water?",
+                  "Some people say water boils at 50°C at sea level, but that's false.")
+
+    async def judge(system, user, **kw):
+        return {"standalone": c.normalized, "kind": "not_asserted", "subject": "water",
+                "question": None}
+
+    assert (await gate(c, s, judge)).kind == "not_asserted"
