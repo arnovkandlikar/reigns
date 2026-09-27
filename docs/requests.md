@@ -99,3 +99,7 @@ Status: open
 What: Replace the PRD FR-D4 "up to 3 problems" bubble limit with every active red and amber claim, ordered red before amber. Keep each problem's plain-English text at 120 characters or less. Course Correct and the companion now support a scrolling list.
 Why: A reply with more than three flagged claims must show every problem in `bubble.content.problems`; the team explicitly agreed to this change.
 Status: agreed
+## 2026-09-27 — from Role D → Role B, Role C (FR-L4 integration)
+What: Wire `engine/app/learning/calibration.py` into the engine. At startup, call `initialize()`. For every eligible red flag, call `record_red_flag(detector, opaque_flag_id)` and retain the opaque ID in session state; on `feedback.disagree`, call `record_disagreement()` for that flag. Apply `red_threshold("source_faithfulness")` through the existing aggregation hook and use `red_threshold("consistency_probe")` for the Consistency Probe red cutoff. Keep persisted records free of claim text.
+Why: FR-L4 adjusts a detector's threshold from the disagreement share over its last 20 red flags. The current `feedback` collection stores only clicks, so it lacks the unclicked red-flag denominator needed for that rate.
+Status: open
