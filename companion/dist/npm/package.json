@@ -1,0 +1,26 @@
+{
+  "name": "reigns-work",
+  "version": "1.0.0",
+  "description": "Reigns: a desktop horse that watches your Claude chats, catches hallucinations, and helps fix them (macOS).",
+  "bin": {
+    "reigns-work": "bin/reigns.js"
+  },
+  "files": [
+    "bin",
+    "payload",
+    "README.md"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude",
+    "hallucination",
+    "macos",
+    "desktop-pet"
+  ],
+  "license": "UNLICENSED"
+}

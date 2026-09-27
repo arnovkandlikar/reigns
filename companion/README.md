@@ -20,6 +20,24 @@ Or open `Reigns.xcodeproj` in Xcode and press Run.
   every rebuild. With your Apple Development identity set, grant it once and it sticks.
 - Logs: `log stream --predicate 'subsystem == "app.reigns"'`
 
+## Releasing (npm: reigns-work)
+
+Free distribution, no Apple Developer account: the app is ad-hoc signed and installed with a
+terminal command (npm/curl downloads aren't quarantined, so Gatekeeper doesn't block it). Users
+bring their own API keys; nothing secret ships.
+
+```bash
+sh companion/dist/build_release.sh      # Release app (arm64 + x86_64) + engine bundle → dist/npm/payload
+cd companion/dist/npm
+npm version patch                       # bump the version for every release
+npm publish                             # needs `npm login` once
+```
+
+Users install with `npx reigns-work install` (app → ~/Applications, engine → ~/.reigns with a
+LaunchAgent, keys → ~/.reigns/.env). Also: `update`, `keys`, `status`, `start|stop|restart`,
+`uninstall`. Test without touching your Mac's real setup:
+`REIGNS_HOME=/tmp/r REIGNS_APPS=/tmp/r/Apps node companion/dist/npm/bin/reigns.js install --no-agent --no-open`.
+
 ## Layout
 
 | Folder | Contents |
@@ -92,6 +110,11 @@ Or open `Reigns.xcodeproj` in Xcode and press Run.
       chat are marked on Claude's window by a click-through overlay (red fill + solid underline = likely
       wrong, orange + dashed = couldn't confirm). Exact text via AXBoundsForRange, one box per line,
       refreshed ~3×/s so it follows scrolling (`Reigns/AX/HighlightScanner.swift`, `Reigns/Pet/HighlightOverlay.swift`).
+      Only Claude's replies are marked (never your messages); each claim once, at its first
+      appearance in the reply it was flagged in (earliest reply wins for repeats). After Fix it,
+      everything flagged so far is cleared; errors that come back in later replies are marked there.
+- [x] Per-problem "I disagree" (👎 on each bubble bullet → `feedback.disagree` for that claim); the
+      bullet is struck through and its highlight removed. Replaces the single top-claim button.
 - [x] The pet's eyes follow the mouse pointer.
 - [x] When the Dock lifts the pet, the whole horse shows (no cut-off edge above the Dock).
 - [x] Switching chats (or to the Code tab) stops any voice line about the previous chat.

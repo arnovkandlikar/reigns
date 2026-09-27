@@ -21,10 +21,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var claims: [ClaimVerdict] = []
         var bubble: BubbleContent?
         var voice: VoicePlay?
+        /// Which reply (conversation position) each claim was flagged in.
+        var claimPositions: [String: Int] = [:]
+        /// Replies up to this position were covered by a Fix it: their claims aren't highlighted.
+        var fixBoundary: Int?
+        var disagreed: Set<String> = []
     }
     private var chatMemory: [String: ChatMemory] = [:]
     private var chatOrder: [String] = []
     private var currentChatKey: String?
+    /// Position of every message sent to the engine in this chat, by message_id.
+    private var messagePositions: [String: Int] = [:]
+    /// Claim → position of the reply it was flagged in (current chat).
+    private var claimPositions: [String: Int] = [:]
+    /// Highest position covered by the last Fix it (current chat).
+    private var fixBoundary: Int?
     private static let rememberedChats = 20
     private let onboarding = OnboardingWindow()
     private let highlightOverlay = HighlightOverlay()
@@ -76,7 +87,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine.onVerdicts = { [weak self] verdicts in
             guard let self else { return }
             self.pet.apply(verdicts)
-            self.remember { $0.claims = self.pet.model.claims }
+            if let position = self.messagePositions[verdicts.messageID] {
+                for claim in verdicts.claims { self.claimPositions[claim.claimID] = position }
+            }
+            self.remember {
+                $0.claims = self.pet.model.claims
+                $0.claimPositions = self.claimPositions
+            }
             self.finishScan(verdicts.messageID)
         }
         engine.onError = { [weak self] _ in self?.clearScans() }
@@ -102,7 +119,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, !self.state.isVoiceMuted, !self.state.isPaused else { return }
             self.voice.play(line)
         }
-        pet.onDisagree = { [weak self] claimID in self?.engine.sendDisagree(claimID: claimID) }
+        pet.onDisagree = { [weak self] claimID in
+            guard let self else { return }
+            self.engine.sendDisagree(claimID: claimID)
+            self.remember { $0.disagreed = self.pet.model.disagreedClaimIDs }
+        }
         inserter = ComposerInserter(composerDOMClass: rules.composerDOMClass)
         pet.onFixIt = { [weak self] correction, mode in self?.fixIt(correction, mode: mode) }
         mock = MockEngine(engine: engine)
@@ -128,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if self?.currentChatKey == nil, completed.message.position == 0 {
                 self?.currentChatKey = completed.id
             }
+            self?.messagePositions[completed.id] = completed.message.position
             self?.engine.sendMessage(completed)
             if completed.message.role == .assistant { self?.startScan(completed.id) }
         }
@@ -138,6 +160,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.pet.resetForNewConversation()
             self?.lastVoice = nil
             self?.currentChatKey = chatKey
+            self?.messagePositions = [:]
+            self?.claimPositions = [:]
+            self?.fixBoundary = nil
             self?.restoreChatMemory()
         }
 
@@ -230,7 +255,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// line come back. The engine restores the heat itself.
     private func restoreChatMemory() {
         guard let key = currentChatKey, let memory = chatMemory[key] else { return }
-        pet.restore(claims: memory.claims, bubble: memory.bubble)
+        pet.restore(claims: memory.claims, bubble: memory.bubble, disagreed: memory.disagreed)
+        claimPositions = memory.claimPositions
+        fixBoundary = memory.fixBoundary
         lastVoice = memory.voice
         pet.model.hasVoiceLine = memory.voice != nil
         Log.pet.info("Restored chat: \(memory.claims.count) claims, voice line \(memory.voice != nil)")
@@ -244,18 +271,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// After a Fix it, nothing flagged so far is highlighted; errors that come back in later
+    /// replies are flagged again by the engine and highlighted there.
+    private func markFixBoundary() {
+        let latest = max(messagePositions.values.max() ?? -1, claimPositions.values.max() ?? -1)
+        guard latest >= 0 else { return }
+        fixBoundary = latest
+        remember { $0.fixBoundary = latest }
+    }
+
+    /// What to highlight: red/amber claims not disagreed with and not covered by a fix, each marked
+    /// once, in the first reply it appeared in.
+    private func highlightTargets() -> [HighlightTarget] {
+        var targets: [String: HighlightTarget] = [:]
+        for claim in pet.model.claims where !pet.model.disagreedClaimIDs.contains(claim.claimID) {
+            let severity: HighlightTarget.Severity
+            switch claim.final {
+            case "red": severity = .red
+            case "amber": severity = .amber
+            default: continue
+            }
+            let position = claimPositions[claim.claimID]
+            if let boundary = fixBoundary, (position ?? Int.min) <= boundary { continue }
+            // Same wrong claim in several replies: keep the earliest one.
+            let key = claim.quote.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            if let existing = targets[key], (existing.position ?? .max) <= (position ?? .max) { continue }
+            targets[key] = HighlightTarget(quote: claim.quote, severity: severity, position: position)
+        }
+        return Array(targets.values)
+    }
+
     /// Marks red/amber claims of the current chat on Claude's window, following scrolling.
     private func refreshHighlights() {
         guard state.isHighlighting, !state.isPaused, !state.isMockEngine,
               let pid = frontmostClaude?.processIdentifier
         else { highlightOverlay.hide(); return }
-        let targets = pet.model.claims.compactMap { claim -> HighlightTarget? in
-            switch claim.final {
-            case "red": return HighlightTarget(quote: claim.quote, severity: .red)
-            case "amber": return HighlightTarget(quote: claim.quote, severity: .amber)
-            default: return nil
-            }
-        }
+        let targets = highlightTargets()
         guard !targets.isEmpty else { highlightOverlay.hide(); return }
         guard !highlightBusy else { return }  // previous scan still running (long chat)
         highlightBusy = true
@@ -323,10 +374,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .inserted:
                 Log.pet.info("Fix it: prompt inserted (\(correction.promptType.rawValue, privacy: .public))")
                 self.engine.sendCorrectionInserted(correctionID: correction.correctionID)
+                self.markFixBoundary()
                 self.pet.closeBubbleAfterFix()
             case .copiedToClipboard:
                 self.pet.showFixNote("Couldn't reach Claude's message box. The fix is on your clipboard: click the box and press ⌘V.")
                 self.engine.sendCorrectionInserted(correctionID: correction.correctionID)
+                self.markFixBoundary()
             }
         }
     }

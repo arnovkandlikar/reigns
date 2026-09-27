@@ -25,6 +25,11 @@ final class PetViewModel {
     var unverifiedCount = 0
     /// Every checked claim in this conversation (merged from verdicts.update), for Details.
     var claims: [ClaimVerdict] = []
+    /// Claims the user said were wrong ("I disagree"): struck through, never highlighted.
+    var disagreedClaimIDs: Set<String> = []
+    /// After an "I disagree", the engine rebuilds the fix without that claim; until the new bubble
+    /// arrives, Fix it is held so it can't paste the old prompt.
+    var isRebuildingFix = false
     /// FR-A9: Claude's message box already has text; waiting for Replace / Add to it.
     var pendingFix: Correction?
     /// Session Brief: the pet is offering to paste a context refresh (calm, non-alarming).

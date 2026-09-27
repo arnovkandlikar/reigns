@@ -6,6 +6,9 @@ struct HighlightTarget: Equatable {
     enum Severity { case red, amber }
     let quote: String
     let severity: Severity
+    /// Position of the Claude reply the claim was flagged in; only that reply is searched.
+    /// nil = any Claude reply (first match only).
+    let position: Int?
 }
 
 /// A box to draw, in AX (top-left origin, global) coordinates.
@@ -14,9 +17,10 @@ struct HighlightBox: Equatable {
     let severity: HighlightTarget.Severity
 }
 
-/// Finds where flagged claims appear in Claude's window: walks the visible static text and asks
-/// Chromium for the exact bounds of each quote (AXBoundsForRange). Quotes that wrap are split into
-/// one box per line. Runs off the main thread.
+/// Finds where flagged claims appear in Claude's window: walks the visible static text of Claude's
+/// replies (never the user's messages) and asks Chromium for the exact bounds of each quote
+/// (AXBoundsForRange). Each claim is marked once: its first appearance in the reply it was flagged
+/// in. Quotes that wrap are split into one box per line. Runs off the main thread.
 struct HighlightScanner {
     let rules: AXRules.Conversation
 
@@ -35,11 +39,13 @@ struct HighlightScanner {
 
         var boxes: [HighlightBox] = []
         for target in targets {
-            for (element, value) in texts {
-                guard let range = Self.locate(target.quote, in: value) else { continue }
-                for rect in Self.lineRects(element, range: range) where rect.intersects(windowFrame) {
+            // First appearance only, and only in the reply the claim came from.
+            for text in texts where target.position == nil || text.position == target.position {
+                guard let range = Self.locate(target.quote, in: text.value) else { continue }
+                for rect in Self.lineRects(text.element, range: range) where rect.intersects(windowFrame) {
                     boxes.append(HighlightBox(rect: rect, severity: target.severity))
                 }
+                break
             }
         }
         return (boxes, windowFrame)
@@ -47,13 +53,30 @@ struct HighlightScanner {
 
     // MARK: - Finding text
 
-    /// Visible static text in the conversation. Returns nothing in a mode we don't read (Code tab).
-    private func collectTexts(in window: AXUIElement) -> [(AXUIElement, NSString)] {
-        var result: [(AXUIElement, NSString)] = []
-        var stack = [window]
+    private struct TextRun {
+        let element: AXUIElement
+        let value: NSString
+        /// Position of the Claude reply this text belongs to.
+        let position: Int
+    }
+
+    private struct Pending {
+        let element: AXUIElement
+        let articleNumber: Int?
+    }
+
+    /// Visible static text of Claude's replies, in document order, tagged with the reply's position
+    /// (from the "Message N" label, like ConversationReader). User messages are skipped entirely.
+    /// Returns nothing in a mode we don't read (Code tab).
+    private func collectTexts(in window: AXUIElement) -> [TextRun] {
+        var result: [TextRun] = []
+        var stack = [Pending(element: window, articleNumber: nil)]
         var visited = 0
-        while let element = stack.popLast(), visited < Self.maxNodes {
+        var headingIndex = 0
+        var currentReply: Int?  // nil while inside a user message (or before any message)
+        while let next = stack.popLast(), visited < Self.maxNodes {
             visited += 1
+            let element = next.element
             let role = AX.string(element, kAXRoleAttribute) ?? ""
             if role == kAXRadioButtonRole,
                let label = AX.string(element, kAXTitleAttribute) ?? AX.string(element, kAXDescriptionAttribute),
@@ -63,15 +86,44 @@ struct HighlightScanner {
                 if (value as? Int) == 1 { return [] }
             }
             if rules.skipRoles.contains(role) { continue }
+            let subrole = AX.string(element, kAXSubroleAttribute) ?? ""
+            if rules.skipSubroles.contains(subrole) { continue }
+
+            if role == kAXHeadingRole, let isAssistant = headingIsAssistant(element) {
+                let position = next.articleNumber.map { $0 - 1 } ?? headingIndex
+                currentReply = isAssistant ? position : nil
+                headingIndex += 1
+                continue  // the heading's own text is a screen-reader summary
+            }
             if role == kAXStaticTextRole {
-                if let value = AX.string(element, kAXValueAttribute), value.count >= 3 {
-                    result.append((element, value as NSString))
+                if let position = currentReply, let value = AX.string(element, kAXValueAttribute), value.count >= 3 {
+                    result.append(TextRun(element: element, value: value as NSString, position: position))
                 }
                 continue
             }
-            stack.append(contentsOf: AX.children(element).reversed())
+
+            var articleNumber = next.articleNumber
+            if subrole == "AXDocumentArticle" {
+                let label = AX.string(element, kAXTitleAttribute) ?? AX.string(element, kAXDescriptionAttribute) ?? ""
+                if label.hasPrefix(rules.articleTitlePrefix) {
+                    articleNumber = Int(label.dropFirst(rules.articleTitlePrefix.count).prefix(while: \.isNumber))
+                }
+            }
+            stack.append(contentsOf: AX.children(element).reversed().map {
+                Pending(element: $0, articleNumber: articleNumber)
+            })
         }
         return result
+    }
+
+    /// true = "Claude responded: …", false = "You said: …", nil = not a message heading.
+    private func headingIsAssistant(_ heading: AXUIElement) -> Bool? {
+        let title = AX.string(heading, kAXTitleAttribute)
+            ?? AX.children(heading).lazy.compactMap { AX.string($0, kAXValueAttribute) }.first
+            ?? ""
+        if title.hasPrefix(rules.assistantHeadingPrefix) { return true }
+        if title.hasPrefix(rules.userHeadingPrefix) { return false }
+        return nil
     }
 
     /// Where `quote` sits in one text run: the whole quote if it's there, otherwise the longest

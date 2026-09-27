@@ -15,7 +15,7 @@ struct BubbleActions {
 }
 
 /// FR-A8: speech bubble above the pet. Shows bubble.content with Fix it (only when a correction is
-/// offered), Details, I disagree and Dismiss. Max width 320 px.
+/// offered), Details and Dismiss; each problem has its own "I disagree" button. Max width 320 px.
 struct BubbleView: View {
     let model: PetViewModel
     let actions: BubbleActions
@@ -51,7 +51,8 @@ struct BubbleView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             if !content.problems.isEmpty {
-                ProblemList(problems: content.problems)
+                ProblemList(problems: content.problems, disagreed: model.disagreedClaimIDs,
+                            onDisagree: actions.disagree)
             }
 
             if !content.patternText.isEmpty {
@@ -150,17 +151,15 @@ struct BubbleView: View {
     private var buttons: some View {
         HStack(spacing: 6) {
             if let correction = content.correction {
-                Button("Fix it") { actions.fixIt(correction) }
+                Button(model.isRebuildingFix ? "Updating…" : "Fix it") { actions.fixIt(correction) }
                     .buttonStyle(.borderedProminent)
                     .tint(PetLevel.color(content.level))
+                    .disabled(model.isRebuildingFix)
+                    .help(model.isRebuildingFix ? "Rebuilding the fix without the claims you disagreed with" : "")
             }
             Button(model.isDetailsOpen ? "Hide details" : "Details") {
                 model.isDetailsOpen.toggle()
             }
-            Button("I disagree") {
-                if let top = content.problems.first { actions.disagree(top) }
-            }
-            .disabled(content.problems.isEmpty)
             Spacer(minLength: 0)
             Button("Dismiss") { actions.dismiss() }
         }
@@ -288,6 +287,9 @@ private struct ClaimRow: View {
 /// Every problem the engine sent (no cap). Scrolls once the list gets long so the bubble stays on screen.
 private struct ProblemList: View {
     let problems: [BubbleProblem]
+    /// Claims already disagreed with (struck through).
+    let disagreed: Set<String>
+    let onDisagree: (BubbleProblem) -> Void
 
     private static let scrollAfter = 5
 
@@ -302,8 +304,22 @@ private struct ProblemList: View {
     private var rows: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(problems) { problem in
-                Text("• \(problem.text)")
-                    .fixedSize(horizontal: false, vertical: true)
+                let isDisagreed = disagreed.contains(problem.claimID)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("• \(problem.text)")
+                        .strikethrough(isDisagreed)
+                        .foregroundStyle(isDisagreed ? .secondary : .primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    // FR-A8 I disagree, per problem (feedback.disagree for this claim).
+                    Button { onDisagree(problem) } label: {
+                        Image(systemName: isDisagreed ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(isDisagreed || problem.claimID.isEmpty)
+                    .help(isDisagreed ? "You disagreed with this" : "I disagree with this one")
+                }
             }
         }
         .font(.system(size: 12))

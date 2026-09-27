@@ -13,7 +13,7 @@ final class PetPanelController {
     private static let fadeDuration: TimeInterval = 0.25
 
     let model = PetViewModel()
-    /// FR-A8: I disagree on the top claim → feedback.disagree (sent by the app delegate).
+    /// FR-A8: I disagree on one problem → feedback.disagree for its claim (sent by the app delegate).
     var onDisagree: ((String) -> Void)?
     /// FR-A9: Fix it (mode nil = not chosen yet; the app delegate checks the message box first).
     var onFixIt: ((Correction, ComposerInserter.Mode?) -> Void)?
@@ -87,6 +87,7 @@ final class PetPanelController {
 
     func apply(_ bubble: BubbleContent) {
         model.bubble = bubble
+        model.isRebuildingFix = false  // the rebuilt fix (without disagreed claims) is here
         // A warning replaces a context-refresh offer.
         if bubble.level >= 2, model.briefOffer != nil { clearBriefOffer() }
         // Something's wrong and the user hasn't looked yet: nudge them to click.
@@ -110,10 +111,19 @@ final class PetPanelController {
         model.claims = claims
     }
 
+    /// Hold Fix it until the engine sends the rebuilt bubble (or 8 s pass, so it can't stay stuck).
+    private func holdFixUntilRebuilt() {
+        model.isRebuildingFix = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            MainActor.assumeIsolated { self?.model.isRebuildingFix = false }
+        }
+    }
+
     /// Flipped back to a chat: bring back what we found there (no "Click me!" nudge, it was seen).
-    func restore(claims: [ClaimVerdict], bubble: BubbleContent?) {
+    func restore(claims: [ClaimVerdict], bubble: BubbleContent?, disagreed: Set<String>) {
         model.claims = claims
         model.bubble = bubble
+        model.disagreedClaimIDs = disagreed
     }
 
     /// New conversation: back to Calm with nothing to show until the engine reports.
@@ -126,6 +136,7 @@ final class PetPanelController {
         model.unverifiedCount = 0
         model.bubble = nil
         model.claims = []
+        model.disagreedClaimIDs = []
         model.hasUnseenIssue = false
         model.hasVoiceLine = false
         positionBubble(animated: true)
@@ -284,6 +295,8 @@ final class PetPanelController {
             },
             disagree: { [weak self] problem in
                 Log.pet.info("I disagree tapped for claim \(problem.claimID, privacy: .public)")
+                self?.model.disagreedClaimIDs.insert(problem.claimID)
+                self?.holdFixUntilRebuilt()
                 self?.onDisagree?(problem.claimID)
             },
             dismiss: { [weak self] in self?.closeBubble() },
