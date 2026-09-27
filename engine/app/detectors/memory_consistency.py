@@ -58,6 +58,8 @@ Rules:
 - Use only the memories, not outside knowledge.
 - Same SUBJECT required: a memory about the Eiffel Tower's completion year says nothing about
   its height.
+- Rounding or measurement precision is NOT a contradiction (8,849 m vs "about 8,848 m";
+  330 m vs 330.5 m). Different years, names or clearly different numbers ARE.
 - Talking ABOUT something is not violating it ("pandas 2.0 added X" is not a contradiction of
   "user is on pandas 1.5" — but CODE that requires 2.0 for a 1.5 user is).
 - "explanation": one short sentence for the user. Start with "You told Claude …" for user

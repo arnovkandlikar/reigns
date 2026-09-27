@@ -136,6 +136,39 @@ _REQUEST_UNTRUE = re.compile(
 )
 
 
+# "Some old sites say Everest is 7,849 m, but …", "A common myth is that …, but in reality …":
+# the reply REPORTS a claim in order to reject it. QA (F7) saw the model gate call this a
+# world fact on some runs, so this obvious pattern is decided without the model.
+_REPORTED = re.compile(
+    r"^\W*(?:(?:some|many|most|older|old|certain|a few|several|other)\s+){0,2}"
+    r"(?:\w+\s+){0,2}?(?:sites?|websites?|sources?|people|articles?|books?|reports?|"
+    r"textbooks?|posts?|folks|guides?|references?)\s+(?:say|said|claim|claimed|state|stated|"
+    r"list|listed|suggest|report|believe|give|gave|put)\b"
+    r"|^\W*(?:it(?:'s| is| was)\s+(?:often|commonly|widely|sometimes)\s+(?:said|claimed|"
+    r"believed|thought|stated))"
+    r"|^\W*(?:a|the|one)\s+(?:common\s+|popular\s+|widespread\s+|old\s+)?(?:myth|"
+    r"misconception|belief|claim|rumou?r)\b",
+    re.IGNORECASE,
+)
+_REJECTION = re.compile(
+    r"\b(?:but|however|in reality|actually|in fact|that'?s (?:not|false|wrong|a myth)|"
+    r"this is (?:not|false|wrong|a myth)|is (?:false|wrong|incorrect|a myth)|incorrect|"
+    r"outdated|debunked)\b",
+    re.IGNORECASE,
+)
+
+
+def reported_then_rejected(session: SessionContext, claim: Claim) -> bool:
+    """The reply attributes the claim to others and then rejects it in the same breath."""
+    if not _REPORTED.search(claim.quote.strip()):
+        return False
+    reply = session.message(claim.message_id)
+    text = reply.text if reply else claim.quote
+    at = text.find(claim.quote[:40])
+    after = text[at + len(claim.quote) : at + len(claim.quote) + 250] if at >= 0 else text
+    return bool(_REJECTION.search(after) or _REJECTION.search(claim.quote))
+
+
 def requested_untrue(session: SessionContext, claim: Claim) -> bool:
     """Did the user's message right before this reply ask for false/made-up content?"""
     user = session.previous(claim.message_id, "user")
@@ -213,6 +246,10 @@ async def gate(claim: Claim, session: SessionContext, judge: Any = None) -> Gate
     if looks_like_instruction(claim.quote):  # fast path: obvious advice, no call needed
         return _remember(
             session, key, GateResult(claim.normalized, "advice", "", None, "heuristic")
+        )
+    if reported_then_rejected(session, claim):  # fast path: "some sites say X, but …"
+        return _remember(
+            session, key, GateResult(claim.normalized, "not_asserted", "", None, "heuristic")
         )
     if judge is None and not _enabled():
         return _remember(session, key, heuristic(claim, session))

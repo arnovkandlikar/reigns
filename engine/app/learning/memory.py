@@ -588,6 +588,23 @@ def specifics_in_evidence(claim_text: str, result: Any) -> bool:
     return True
 
 
+def correction_text(claim_text: str, result: Any) -> str:
+    """What a correction card says. The judge's explanation is used only when every number
+    it adds is really in the evidence; otherwise a plain "Not true: <claim>". QA found a card
+    reading "about 8,848 m, not 8,849 m" (the model's own wording, not the source's), which
+    later turned the correct 8,849 m red."""
+    explanation = str(getattr(result, "explanation", "") or "").strip()
+    fallback = f"Not true: {claim_text.strip().rstrip('.')}."
+    if not explanation:
+        return fallback
+    claim_nums = set(_YEAR_OR_NUM.findall(claim_text.replace(",", "")))
+    evidence = " ".join(e.snippet for e in getattr(result, "evidence", []) or []).replace(",", "")
+    added = set(_YEAR_OR_NUM.findall(explanation.replace(",", ""))) - claim_nums
+    if any(n not in evidence for n in added):
+        return fallback
+    return explanation
+
+
 def cards_from_verdicts(claims: list[Claim], verdicts: list[ClaimVerdict]) -> list[dict[str, Any]]:
     """Confirmed-only: green+supported-with-evidence → verified_fact;
     red+contradicted-with-evidence → correction. Everything else is ignored."""
@@ -621,7 +638,7 @@ def cards_from_verdicts(claims: list[Claim], verdicts: list[ClaimVerdict]) -> li
                     {
                         "claim_id": claim.claim_id,
                         "kind": "correction",
-                        "text": r.explanation or claim.normalized,
+                        "text": correction_text(claim.normalized, r),
                         "source": r.detector,
                         "confidence": r.confidence,
                     }
