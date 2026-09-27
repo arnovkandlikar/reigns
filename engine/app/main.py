@@ -186,6 +186,13 @@ def _debug_session(session_id: str) -> Session:
     return debug_sessions[session_id]
 
 
+@app.get("/debug/llm")
+async def debug_llm() -> dict:
+    """Which AI provider/model is in use, and one tiny test call (checks the key works)."""
+    from app import llm
+    return await llm.selftest()
+
+
 @app.get("/debug/brief")
 async def debug_brief(session_id: str = "debug") -> dict:
     """Session Brief for a debug session (Role C): the paste-into-Claude text, brought up to date."""
