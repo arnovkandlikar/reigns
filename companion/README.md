@@ -94,9 +94,9 @@ LaunchAgent, keys → ~/.reigns/.env). Also: `update`, `keys`, `status`, `start|
       Run: `open --env REIGNS_MOCK=1 companion/build/Debug/Reigns.app`
 - [x] "Click me!" callout above the pet when there's an issue the user hasn't opened yet
 - [x] Bubble voice controls: replay the last spoken line, mute/unmute (same setting as the menu)
-- [x] Characters (menu › Character): **Charlie** (default horse) or **Marley** (a unicorn: golden spiral horn, pastel rainbow mane, sparkles, pearly white coat at Calm/Recovered,
+- [x] Characters (menu › Character): **Mamu** (default horse) or **Mia** (a unicorn: golden spiral horn, pastel rainbow mane, sparkles, pearly white coat at Calm/Recovered,
       eyelashes, rosy cheeks). Shared expressions, level colours and accessories;
-      Marley has her own engine voice (`"character": "charlie"|"marley"` in `session.start`); remembered across launches (`Reigns/Pet/PetCharacter.swift`).
+      Mia has her own engine voice (`"character": "charlie"|"marley"` in `session.start`); remembered across launches (`Reigns/Pet/PetCharacter.swift`).
 - [x] Language (menu › Language): English or Español, sent as `"language": "en"|"es"`. Switching
       language or character mid-chat sends `session.update` (same session: score, history and bubble
       stay; the engine re-sends the bubble in the new language). `session.start` carries both on
