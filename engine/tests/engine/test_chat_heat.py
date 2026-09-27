@@ -55,7 +55,7 @@ async def test_flipping_chats_restores_each_chats_heat(monkeypatch, tmp_path):
                                        text="When was the Eiffel Tower finished?"))
         out = await s1.on_message(MessageNew(message_id="a1", role="assistant", position=1, text=WRONG))
         heat1 = next(e for e in out if e.type == "heat.update").payload["heat"]
-        assert heat1 > 0 and s1.chat_key == "first-msg-of-chat-1"
+        assert heat1 > 0 and s1.chat_key == "first-msg-of-chat-1+a1"  # first message + first reply
         await settle(s1)
 
         # Flip to chat 2 (never seen): calm.
@@ -65,7 +65,7 @@ async def test_flipping_chats_restores_each_chats_heat(monkeypatch, tmp_path):
 
         # Flip back to chat 1: same heat, level and red count, bubble back, right away.
         s3 = Session("s3", ledger)
-        out = await start(s3, "first-msg-of-chat-1")
+        out = await start(s3, "first-msg-of-chat-1+a1")
         hu, bubble = out[0].payload, out[1]
         assert hu["heat"] == heat1 and hu["level"] >= 1 and hu["red_count"] == 1
         assert bubble.type == "bubble.content" and bubble.payload["level"] >= 1
@@ -76,6 +76,52 @@ async def test_flipping_chats_restores_each_chats_heat(monkeypatch, tmp_path):
                 "SELECT message_id, heat FROM messages WHERE session_id='s1' ORDER BY position"
             )).fetchall()
         assert rows == [("first-msg-of-chat-1", 0), ("a1", heat1)]
+    finally:
+        await ledger.close()
+
+
+async def test_chats_opening_with_the_same_prompt_keep_separate_scores(monkeypatch, tmp_path):
+    """QA: a second chat that opened with the identical prompt started at the first one's heat
+    (33) because both were keyed by their first message. The key now includes the first reply."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(plugins, "get_detector", lambda n: Contradicts() if n == "claim_verifier" else None)
+    ledger = Ledger(str(tmp_path / "t.db"))
+    await ledger.open()
+    try:
+        prompt = "When was the Eiffel Tower finished?"
+        s1 = Session("s1", ledger)
+        await start(s1)
+        await s1.on_message(MessageNew(message_id="same-first", role="user", position=0, text=prompt))
+        out = await s1.on_message(MessageNew(message_id="reply-A", role="assistant", position=1, text=WRONG))
+        heat1 = next(e for e in out if e.type == "heat.update").payload["heat"]
+        assert heat1 > 0
+        await settle(s1)
+
+        # Chat 2 opens with the identical prompt (same first-message id).
+        # a) The companion only knows the first message yet: start calm, restore nothing.
+        s2 = Session("s2", ledger)
+        [hu] = await start(s2, "same-first")
+        assert hu.payload["heat"] == 0
+        # b) Its reply differs, so it gets its own key and its own score (here: calmer).
+        await s2.on_message(MessageNew(message_id="same-first", role="user", position=0, text=prompt))
+        out2 = await s2.on_message(MessageNew(message_id="reply-B", role="assistant", position=1, text=WRONG))
+        heat2 = next(e for e in out2 if e.type == "heat.update").payload["heat"]
+        await settle(s2)
+        assert s2.chat_key == "same-first+reply-B"
+        assert heat2 == heat1  # it started from 0, not from chat 1's heat (which would be higher)
+
+        # Chat 2 calms down after a verified-looking clean stretch; chat 1 keeps its own heat.
+        s2.heat.restore(5, s2.clock())
+        s2._remember_heat(0, 0, 0)
+        await s2._save_heat()
+
+        # Coming back to each chat restores its own heat.
+        s3 = Session("s3", ledger)
+        [hu3, *_] = await start(s3, "same-first+reply-A")
+        assert hu3.payload["heat"] == heat1
+        s4 = Session("s4", ledger)
+        [hu4, *_] = await start(s4, "same-first+reply-B")
+        assert hu4.payload["heat"] == 5
     finally:
         await ledger.close()
 
