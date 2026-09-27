@@ -60,6 +60,11 @@ Rules:
   its height.
 - Rounding or measurement precision is NOT a contradiction (8,849 m vs "about 8,848 m";
   330 m vs 330.5 m). Different years, names or clearly different numbers ARE.
+- Leaving out a detail is NOT a contradiction: a claim that states PART of what a memory says
+  ("returns a new DataFrame; with inplace=True it modifies the original" vs a memory that also
+  adds "and returns None") is consistent.
+- Same SCOPE required: a figure for a different route, endpoint, period or version ("Tokyo to
+  Shin-Osaka" vs "Tokyo to Kyoto") is unrelated, not a contradiction.
 - Talking ABOUT something is not violating it ("pandas 2.0 added X" is not a contradiction of
   "user is on pandas 1.5" — but CODE that requires 2.0 for a 1.5 user is).
 - "explanation": one short sentence for the user. Start with "You told Claude …" for user
@@ -173,6 +178,9 @@ def per_minute(q: Quantity) -> Quantity:
     return q
 
 
+_DURATIONS = {"ms", "seconds", "minutes", "hours", "days"}
+
+
 def number_violation(card: MemoryCard, claim_text: str) -> str | None:
     """Plain-English violation if the claim exceeds an upper limit (or undercuts a minimum) the
     user set on the same unit. None when there's nothing comparable."""
@@ -182,6 +190,12 @@ def number_violation(card: MemoryCard, claim_text: str) -> str | None:
     if not (upper or lower):
         return None
     for cq in map(per_minute, quantities(card.text)):
+        if cq.unit in _DURATIONS:
+            # A bare duration in a rule is ambiguous: a pacing gap ("0.6 s between calls"), a
+            # timeout, a back-off. Comparing it with any other duration ("fall back to 60 s if
+            # Retry-After is missing") made a correct reply red in the long-chat QA. Rates
+            # (requests/minute), money and sizes stay checked; durations go to the judge.
+            continue
         for q in map(per_minute, quantities(claim_text)):
             # A total cap ("budget $500") also bounds a rate ("$1,200 per month").
             same = q.unit == cq.unit or ("/" not in cq.unit and q.unit.split("/")[0] == cq.unit)
@@ -370,6 +384,18 @@ class MemoryConsistency(BaseDetector):
             why = number_violation(card, text) or python_violation(card, claim.code)
             if why:
                 return self.result("contradicted", 0.93, why, [self._evidence(card)])
+
+        # An earlier VERIFIED fact already says what this claim says → memory has nothing to
+        # object to (even if some other card disagrees: then memory disagrees with itself, and
+        # the web detectors decide). Checked against the whole ledger, not just the top-3 recall.
+        if not claim.code and g.kind in ("world_fact", "unknown"):
+            for c in await memory.list_cards(uid):
+                if (
+                    c.kind == "verified_fact"
+                    and not getattr(c, "superseded_by", None)
+                    and memory.echoes(c.text, claim.normalized)
+                ):
+                    return None
 
         # c: judge.
         data = await self.cached(

@@ -198,6 +198,9 @@ Rules:
 - "subject": 2–5 lowercase words naming WHAT the fact is about ("api rate limit",
   "pandas version") — used to replace old cards when the user changes a fact.
 - At most 5 cards. If there is nothing durable, return an empty list.
+- "Earlier the assistant said" is context ONLY, to understand what the user refers to. Never
+  turn the assistant's suggestions, advice or numbers into memories: if the user asks "what
+  happens if I go over the limit?" after the assistant suggested "sleep 0.6 s", store nothing.
 
 Return {"cards": [{"kind": "constraint|user_fact", "text": "...", "subject": "..."}]}"""
 
@@ -562,9 +565,18 @@ async def extract_user_cards(text: str, context: str = "", judge=None) -> list[d
             continue
         kind = c.get("kind")
         body = str(c.get("text") or "").strip()
-        if kind in USER_KINDS and len(body) >= 8:
+        if kind in USER_KINDS and len(body) >= 8 and numbers_grounded(body, authored):
             out.append({"kind": kind, "text": body, "subject": str(c.get("subject") or "")})
     return out[:MAX_CARDS_PER_MESSAGE]
+
+
+def numbers_grounded(card_text: str, user_text: str) -> bool:
+    """Every number in a user card must appear in what the user wrote. QA (long chat): the
+    card "API rate limit is 100 requests per minute; sleep 0.6 seconds between calls" was
+    built from a user QUESTION plus the assistant's earlier advice; the 0.6 s was Claude's."""
+    have = {n.replace(",", "") for n in _YEAR_OR_NUM.findall(user_text)}
+    want = {n.replace(",", "") for n in _YEAR_OR_NUM.findall(card_text)}
+    return want <= have
 
 
 _YEAR_OR_NUM = re.compile(r"\d+(?:[.,]\d+)*")
@@ -586,6 +598,48 @@ def specifics_in_evidence(claim_text: str, result: Any) -> bool:
         if n not in words and n.replace(".", " ") not in plain:
             return False
     return True
+
+
+_NEGATION = re.compile(
+    r"\b(not|no|never|none of|cannot|without)\b|n't\b", re.IGNORECASE
+)
+_CAPITALIZED = re.compile(r"\b[A-Z][\w'’-]*[A-Za-z0-9]")
+ECHO_OVERLAP = 0.8  # share of the claim's meaningful words the verified fact must contain
+
+
+def echoes(fact_text: str, claim_text: str) -> bool:
+    """Does an earlier VERIFIED fact already say what this claim says?
+
+    True when the fact contains every number of the claim, every capitalized name of the claim
+    (Tokyo, Kyoto, DataFrame …), at least 80% of its meaningful words, and both agree on
+    negation. Then the claim cannot be "contradicted by memory": either it's the same fact, or
+    the memory disagrees with itself. QA (long-chat replay) found both:
+      - "df.dropna() returns a new DataFrame by default, but with inplace=True it modifies the
+        original" judged a contradiction of a card saying exactly that plus "returns None";
+      - a correct "Nozomi takes ~2 h 15 min Tokyo→Kyoto" turned red by a bad correction card
+        (built from a Tokyo→Shin-Osaka figure) while a verified card said the same 2 h 15 min.
+    Pure function, never raises.
+    """
+    try:
+        want = {n.replace(",", "") for n in _YEAR_OR_NUM.findall(claim_text)}
+        have = {n.replace(",", "") for n in _YEAR_OR_NUM.findall(fact_text)}
+        if not want <= have:
+            return False
+        if bool(_NEGATION.search(claim_text)) != bool(_NEGATION.search(fact_text)):
+            return False
+        fact_low = normalize_text(fact_text)
+        first = claim_text.strip().split(" ", 1)[0]
+        for name in _CAPITALIZED.findall(claim_text):
+            if name == first and name.lower() in _STOP:
+                continue  # "The", "It" … capitalized only because they start the sentence
+            if normalize_text(name) not in fact_low:
+                return False
+        words = tokens(claim_text)
+        if not words:
+            return False
+        return len(words & tokens(fact_text)) / len(words) >= ECHO_OVERLAP
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def correction_text(claim_text: str, result: Any) -> str:
@@ -744,7 +798,21 @@ async def on_verdicts(
                     subjects[c.claim_id] = g.subject
             resolved.append(c)
         stored = []
+        verified: list[MemoryCard] | None = None
         for c in cards_from_verdicts(resolved, verdicts):
+            if c["kind"] == "correction":
+                # Never store a "correction" of something already verified with evidence: the
+                # two checks disagree, and a wrong correction would turn the right answer red
+                # in every later chat (QA: Nozomi Tokyo→Kyoto 2 h 15 min).
+                if verified is None:
+                    verified = [
+                        v for v in await list_cards(uid)
+                        if v.kind == "verified_fact" and not getattr(v, "superseded_by", None)
+                    ]
+                claim = next((x for x in resolved if x.claim_id == c["claim_id"]), None)
+                if claim and any(echoes(v.text, claim.normalized) for v in verified):
+                    log.info("memory: skipped correction that conflicts with a verified fact")
+                    continue
             card, _ = await add_card(
                 uid,
                 c["kind"],

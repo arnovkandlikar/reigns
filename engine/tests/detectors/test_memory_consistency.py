@@ -524,11 +524,11 @@ async def test_judge_sees_the_claims_subject():
         Claim(
             claim_id="c",
             message_id="a1",
-            quote="first released in 2010",
-            normalized="Flask was first released in 2010.",
+            quote="first released in 2011",  # differs from the card, so the judge must run
+            normalized="Flask was first released in 2011.",
             type="fact",
             risk="high",
         ),
         s,
     )
-    assert "CLAIM: Flask was first released in 2010." in judge.calls[0]
+    assert "CLAIM: Flask was first released in 2011." in judge.calls[0]
