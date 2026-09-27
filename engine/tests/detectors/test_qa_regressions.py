@@ -372,3 +372,109 @@ def test_probe_counts_rounded_numbers_as_the_same_answer():
     assert _rounding_match("The official height is 8,849 metres.", answers, groups, None) == 0
     # a genuinely different number stays unmatched
     assert _rounding_match("Everest is 7,849 metres tall.", answers, groups, None) is None
+
+
+# ------------------------------------------------------------------ search outage (long-chat QA)
+def _claim(text: str) -> Claim:
+    return Claim(
+        claim_id="c", message_id="m", quote=text, normalized=text, type="fact", risk="high"
+    )
+
+
+def _outage_handler(brave_ok: bool = False, wiki_text: str | None = None):
+    def handler(req: httpx.Request) -> httpx.Response:
+        host = req.url.host
+        if host == "api.tavily.com":
+            return httpx.Response(
+                432, json={"detail": {"error": "exceeds your plan's usage limit"}}
+            )
+        if host == "api.search.brave.com":
+            if not brave_ok:
+                return httpx.Response(401)
+            return httpx.Response(
+                200,
+                json={
+                    "web": {
+                        "results": [
+                            {
+                                "url": "https://example.org/eiffel",
+                                "description": "The Eiffel Tower was completed in 1889.",
+                            }
+                        ]
+                    }
+                },
+            )
+        if host == "en.wikipedia.org":
+            params = req.url.params
+            if params.get("list") == "search":
+                hits = [{"title": "Eiffel Tower"}] if wiki_text else []
+                return httpx.Response(200, json={"query": {"search": hits}})
+            return httpx.Response(
+                200, json={"query": {"pages": {"1": {"extract": wiki_text or ""}}}}
+            )
+        return httpx.Response(404)
+
+    return handler
+
+
+async def test_search_outage_is_not_amber(monkeypatch):
+    """Tavily usage limit + Wikipedia doesn't settle it → 'couldn't check' (error), not amber."""
+    monkeypatch.setenv("TAVILY_API_KEY", "t")
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+
+    async def judge(system, user):
+        return {"verdict": "unverified", "confidence": 0.4, "quote": "", "explanation": "?"}
+
+    v = ClaimVerifier(
+        transport=httpx.MockTransport(
+            _outage_handler(
+                wiki_text="The Eiffel Tower is a lattice tower in Paris. It is named after Gustave Eiffel."
+            )
+        ),
+        judge=judge,
+    )
+    r = await v.check(_claim("Flask was first released in 2010."), SessionContext(session_id="s"))
+    assert r.status == "error" and "unavailable" in r.explanation
+
+
+async def test_search_outage_falls_back_to_brave(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "t")
+    monkeypatch.setenv("BRAVE_API_KEY", "b")
+    seen = []
+
+    async def judge(system, user):
+        seen.append(user)
+        return {
+            "verdict": "supported",
+            "confidence": 0.9,
+            "evidence_index": 0,
+            "quote": "The Eiffel Tower was completed in 1889.",
+            "explanation": "ok",
+        }
+
+    v = ClaimVerifier(transport=httpx.MockTransport(_outage_handler(brave_ok=True)), judge=judge)
+    r = await v.check(
+        _claim("The Eiffel Tower was completed in 1889."), SessionContext(session_id="s")
+    )
+    assert r.status == "supported" and "example.org" in seen[0]
+
+
+async def test_wikipedia_still_decides_during_an_outage(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "t")
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+    text = "The Eiffel Tower was completed in 1889 for the World's Fair."
+
+    async def judge(system, user):
+        return {
+            "verdict": "supported",
+            "confidence": 0.95,
+            "evidence_index": 0,
+            "quote": "The Eiffel Tower was completed in 1889",
+            "explanation": "ok",
+        }
+
+    v = ClaimVerifier(transport=httpx.MockTransport(_outage_handler(wiki_text=text)), judge=judge)
+    r = await v.check(
+        _claim("The Eiffel Tower was completed in 1889."), SessionContext(session_id="s")
+    )
+    assert r.status == "supported"
