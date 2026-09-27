@@ -1,6 +1,6 @@
 import AppKit
 
-/// The menu bar icon: the Reigns reins (Assets › MenuBarIcon, a vector template image), sized for
+/// The menu bar icon: the Reigns waves logo (Assets › MenuBarIcon, a template image), sized for
 /// the menu bar and faded while Reigns is paused.
 enum MenuBarIcon {
     private static let height: CGFloat = 18

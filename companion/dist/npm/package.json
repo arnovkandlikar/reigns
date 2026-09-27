@@ -1,6 +1,6 @@
 {
   "name": "reigns-work",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Reigns: a desktop horse that watches your Claude chats, catches hallucinations, and helps fix them (macOS).",
   "bin": {
     "reigns-work": "bin/reigns.js"

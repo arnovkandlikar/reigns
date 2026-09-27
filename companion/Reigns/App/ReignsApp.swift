@@ -53,7 +53,7 @@ struct ReignsApp: App {
             Button("Quit Reigns") { NSApp.terminate(nil) }
                 .keyboardShortcut("q")
         } label: {
-            // The reins icon (template: macOS colours it for light/dark menu bars). Faded when paused.
+            // The waves logo (template: macOS colours it for light/dark menu bars). Faded when paused.
             Image(nsImage: MenuBarIcon.image(paused: state.isPaused))
         }
     }

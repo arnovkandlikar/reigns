@@ -145,9 +145,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         watcher = ConversationWatcher(reader: ConversationReader(rules: rules.conversation))
         watcher.onMessage = { [weak self] completed in
-            // A brand-new chat is named by its first message (same as the engine does).
-            if self?.currentChatKey == nil, completed.message.position == 0 {
-                self?.currentChatKey = completed.id
+            // A brand-new chat is named like the engine and watcher name it: its first message, then
+            // "first message + first reply" once the reply exists (ConversationWatcher.chatKey).
+            if let self {
+                if self.currentChatKey == nil, completed.message.position == 0 {
+                    self.currentChatKey = completed.id
+                } else if completed.message.position == 1, let first = self.currentChatKey,
+                          !first.contains("+") {
+                    self.renameChatMemory(from: first, to: first + "+" + completed.id)
+                }
             }
             self?.messagePositions[completed.id] = completed.message.position
             self?.engine.sendMessage(completed)
@@ -249,6 +255,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if chatOrder.count > Self.rememberedChats {
             chatMemory.removeValue(forKey: chatOrder.removeFirst())
         }
+    }
+
+    /// The chat's key grew from "first message" to "first message + first reply": keep its memory.
+    private func renameChatMemory(from old: String, to new: String) {
+        if let memory = chatMemory.removeValue(forKey: old) { chatMemory[new] = memory }
+        chatOrder = chatOrder.map { $0 == old ? new : $0 }
+        currentChatKey = new
     }
 
     /// Back in a chat we've seen: its flagged claims (highlights, Details), bubble and last spoken
