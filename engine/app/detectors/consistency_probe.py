@@ -259,9 +259,11 @@ class ConsistencyProbe(BaseDetector):
         original_in_majority = og is not None and sizes[og] == sizes[majority]
         agree_with_original = sizes[og] if og is not None else 0
 
+        # Plain English first (this text is shown to users and put in hand-offs), numbers after.
         summary = (
-            f"{n} samples → {len(groups)} different answer{'s' if len(groups) != 1 else ''} "
-            f"(normalized entropy {h:.2f}); {agree_with_original}/{n} match the original"
+            f"{n} samples: {agree_with_original}/{n} agree with the original answer; "
+            f"{len(groups)} distinct answer{'s' if len(groups) != 1 else ''} overall "
+            f"(normalized entropy {h:.2f})"
         )
         evidence = [
             Evidence(source="Consistency Probe", url=None, snippet=summary),

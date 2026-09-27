@@ -343,6 +343,8 @@ class MemoryConsistency(BaseDetector):
         await self._ingest(claim, session)
         uid = memory.user_id_for(session)
         g = await gate(claim, session, self.gate_judge)
+        if g.kind == "not_asserted":
+            return None  # requested false statements, quoted myths: Claude isn't claiming them
         claim = g.resolved(claim)  # reason about the context-resolved claim, not a fragment
         text = claim.code or f"{claim.quote}\n{claim.normalized}"
         # All kinds: the user's facts/rules AND earlier evidence-backed verdicts. Verified facts

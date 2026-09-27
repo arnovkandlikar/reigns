@@ -12,7 +12,8 @@ the report shows which detector raised it and whether alarms grow as the chat ge
     # tab 2:
     python tests/detectors/long_chat.py                  # scraper chat (~3–5 min, real APIs)
     python tests/detectors/long_chat.py --chat japan     # HELD-OUT chat, different domain
-    python tests/detectors/long_chat.py --chat all       # both
+    python tests/detectors/long_chat.py --chat falsestatements  # "give me false statements"
+    python tests/detectors/long_chat.py --chat all       # all of them
     python tests/detectors/long_chat.py --turns 8        # quick smoke run
 
 The "japan" chat was written AFTER the fixes and never used to tune them — its numbers show
@@ -184,30 +185,42 @@ CONVERSATION: list[tuple[str, str]] = [
 # Held-out chat: different domain, budget rule, back-references, tips, opinions, trivia.
 JAPAN: list[tuple[str, str]] = [
     (
-        ("I'm planning 10 days in Japan in early April, first time there. Budget is $3,000 "
-        "not counting flights."),
-        ("Early April is usually cherry-blossom season in Tokyo and Kyoto. With $3,000 for 10 "
-        "days, that's about $300 per day."),
+        (
+            "I'm planning 10 days in Japan in early April, first time there. Budget is $3,000 "
+            "not counting flights."
+        ),
+        (
+            "Early April is usually cherry-blossom season in Tokyo and Kyoto. With $3,000 for 10 "
+            "days, that's about $300 per day."
+        ),
     ),
     (
         "What currency do they use?",
-        ("Japan uses the yen. Cash is still common in small shops, but most larger stores and "
-        "convenience stores accept cards."),
+        (
+            "Japan uses the yen. Cash is still common in small shops, but most larger stores and "
+            "convenience stores accept cards."
+        ),
     ),
     (
         "Do I need a plug adapter coming from the US?",
-        ("Probably not: Japan uses Type A plugs, the same flat two-pin shape as the US, at 100 "
-        "volts."),
+        (
+            "Probably not: Japan uses Type A plugs, the same flat two-pin shape as the US, at 100 "
+            "volts."
+        ),
     ),
     (
         "How do I get from Tokyo to Kyoto?",
-        ("Take the Tokaido Shinkansen. The fastest trains, called Nozomi, take about 2 hours 15 "
-        "minutes."),
+        (
+            "Take the Tokaido Shinkansen. The fastest trains, called Nozomi, take about 2 hours 15 "
+            "minutes."
+        ),
     ),
     (
         "What should I see in Kyoto?",
-        ("Fushimi Inari Shrine is famous for its thousands of red torii gates. Kinkaku-ji, the "
-        "Golden Pavilion, is another highlight."),
+        (
+            "Fushimi Inari Shrine is famous for its thousands of red torii gates. Kinkaku-ji, the "
+            "Golden Pavilion, is another highlight."
+        ),
     ),
     (
         "Is the Golden Pavilion original?",
@@ -223,18 +236,24 @@ JAPAN: list[tuple[str, str]] = [
     ),
     (
         "Should I add Osaka?",
-        ("Yes. It's only about 15 minutes from Kyoto to Shin-Osaka on the Shinkansen, and the "
-        "city is known for street food like takoyaki."),
+        (
+            "Yes. It's only about 15 minutes from Kyoto to Shin-Osaka on the Shinkansen, and the "
+            "city is known for street food like takoyaki."
+        ),
     ),
     (
         "What about Hiroshima?",
-        ("The Hiroshima Peace Memorial, the Genbaku Dome, became a UNESCO World Heritage Site in "
-        "1996."),
+        (
+            "The Hiroshima Peace Memorial, the Genbaku Dome, became a UNESCO World Heritage Site in "
+            "1996."
+        ),
     ),
     (
         "Is it worth a day trip from Osaka?",
-        ("It's doable: the Shinkansen from Shin-Osaka to Hiroshima takes about an hour and a "
-        "half."),
+        (
+            "It's doable: the Shinkansen from Shin-Osaka to Hiroshima takes about an hour and a "
+            "half."
+        ),
     ),
     (
         "Do people tip in Japan?",
@@ -242,8 +261,10 @@ JAPAN: list[tuple[str, str]] = [
     ),
     (
         "Will $300 a day cover all this?",
-        ("For mid-range hotels and food, yes, though train tickets add up: Tokyo to Kyoto one way "
-        "costs roughly 14,000 yen."),
+        (
+            "For mid-range hotels and food, yes, though train tickets add up: Tokyo to Kyoto one way "
+            "costs roughly 14,000 yen."
+        ),
     ),
     (
         "When was Kyoto the capital?",
@@ -251,12 +272,44 @@ JAPAN: list[tuple[str, str]] = [
     ),
     (
         "Great, can you summarize the plan?",
-        ("Ten days in early April on $3,000: Tokyo, then the Nozomi to Kyoto for Fushimi Inari and "
-        "Kinkaku-ji, a day in Osaka, and an optional day trip to Hiroshima. Bring some cash, no "
-        "plug adapter needed, and no tipping."),
+        (
+            "Ten days in early April on $3,000: Tokyo, then the Nozomi to Kyoto for Fushimi Inari and "
+            "Kinkaku-ji, a day in Osaka, and an optional day trip to Hiroshima. Bring some cash, no "
+            "plug adapter needed, and no tipping."
+        ),
     ),
 ]
-CHATS = {"scraper": CONVERSATION, "japan": JAPAN}
+# Bug report: the user ASKED for false statements, then sent REIGN's own "start fresh"
+# hand-off. Every reply is what the user wanted, so any red/amber here is a false alarm.
+FALSE_STATEMENTS: list[tuple[str, str]] = [
+    (
+        "give me 3 completely false statements",
+        (
+            "Here are three false statements:\n1. The Great Wall of China is easy to see with the "
+            "naked eye from the Moon.\n2. Water boils at 50°C at sea level.\n3. Python was "
+            "created by Linus Torvalds in 2005.\n\nThe corrections: the Wall can't be seen from "
+            "the Moon, water boils at 100°C at sea level, and Guido van Rossum released Python "
+            "in 1991."
+        ),
+    ),
+    (
+        (
+            "Start a fresh chat with this handoff:\n- Original question: give me 3 completely "
+            "false statements\n- Confirmed: The Great Wall of China cannot be seen from the "
+            "Moon with the naked eye; Guido van Rossum released Python in 1991\n- Problems and "
+            "evidence:\n1. Recheck Water boils at 50°C at sea level\n- Guardrails: use only "
+            "evidence for factual claims."
+        ),
+        (
+            'The three statements are still false, which is what you asked for.\n1. "The Great '
+            'Wall of China is easy to see with the naked eye from the Moon." This is false: it '
+            'can\'t be seen from the Moon.\n2. "Water boils at 50°C at sea level." This is '
+            'false: water boils at 100°C at sea level.\n3. "Python was created by Linus '
+            'Torvalds in 2005." This is false: Guido van Rossum released Python in 1991.'
+        ),
+    ),
+]
+CHATS = {"scraper": CONVERSATION, "japan": JAPAN, "falsestatements": FALSE_STATEMENTS}
 
 COLOR = {"red": "\033[91m", "amber": "\033[93m", "green": "\033[92m", "skipped": "\033[90m"}
 RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"

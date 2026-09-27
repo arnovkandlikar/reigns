@@ -39,6 +39,7 @@ from app.detectors.base import (
     snippet,
     word_overlap,
 )
+from app.detectors.claim_gate import requested_untrue
 from app.models import Claim, DetectorResult, Evidence, SessionContext
 
 # --- thresholds (tune with Role D's eval results, §6.1 h24–30) --------------------------------
@@ -319,6 +320,8 @@ class ReferenceAuditor(BaseDetector):
         return http_client(transport=self.transport) if self.transport else http_client()
 
     async def _check(self, claim: Claim, session: SessionContext) -> DetectorResult | None:
+        if requested_untrue(session, claim):
+            return None  # "give me a fake citation": made up on purpose, not a hallucination
         if claim.type == "paper":
             return await self._check_paper(claim, session)
         if claim.type == "url":
